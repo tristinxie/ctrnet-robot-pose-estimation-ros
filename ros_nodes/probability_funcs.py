@@ -1,4 +1,5 @@
 import numpy as np
+import kornia
 from scipy import optimize
 from scipy.stats import norm
 
@@ -15,8 +16,9 @@ def additive_gaussian(state, std):
     return state + sample, prob
 
 # What is robot_arm.getPointFeatures()
-def point_feature_obs(state, points_2d, ctrnet, joint_angles, cam, cTr, gamma, thresh):
-    T = poseToMatrix(state)
+def point_feature_obs(state, points_2d, ctrnet, joint_angles, cam, cTr, gamma):
+
+    T = kornia.geometry.conversions.angle_axis_to_rotation_matrix(state)
 
 
     # Want to have final result of project image plane coords

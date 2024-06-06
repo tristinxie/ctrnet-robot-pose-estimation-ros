@@ -117,16 +117,21 @@ def gotData(img_msg, joint_msg):
         qua = kornia.geometry.conversions.angle_axis_to_quaternion(cTr[:,:3]).detach().cpu() # xyzw
         T = cTr[:,3:].detach().cpu()
         # filtering_method = "none"
+        # filtering_method = "z_score"
+        # filtering_method = "mod_z_score"
         filtering_method = "particle"
-        joint_confident_thresh = 3
+        joint_confident_thresh = 7
         num_joint_confident = torch.sum(torch.gt(confidence, 0.90))
+        if num_joint_confident < joint_confident_thresh:
+            print(f"Only confident with {num_joint_confident} joints, skipping...")
+            return
         if filtering_method == "none":
             # input("Press Enter to continue")
             update_publisher(cTr, img_msg, qua.numpy().squeeze(), T.numpy().squeeze())
             return
         elif filtering_method == "particle":
             if cTr_minus_one is not None:
-                pred_cTr = particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, 0.02, 3000, 3, image)
+                pred_cTr = particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, 0.01, 10000, 1, image)
                 cTr_minus_one = pred_cTr
                 points_2d_minus_one = points_2d
                 pred_qua = kornia.geometry.conversions.angle_axis_to_quaternion(pred_cTr[:,:3]).detach().cpu() # xyzw
@@ -139,10 +144,6 @@ def gotData(img_msg, joint_msg):
             return
         # avg_confidence = torch.mean(confidence)
         # print(avg_confidence)
-        if num_joint_confident < joint_confident_thresh:
-            print(f"Only confident with {num_joint_confident} joints, skipping...")
-            return
-
         if len(point_samples) < 30:
             print(f"Number of samples: {len(point_samples)}")
             point_samples.append(T)
@@ -236,8 +237,11 @@ def visualize_panda(particles, joint_angles, cTr, image, points_2d, max_w_idx, p
     plt.grid(True)
     plt.savefig(f"/home/workspace/src/ctrnet-robot-pose-estimation-ros/ros_nodes/visuals/result{visual_idx}.png", dpi=800, format="png")
     visual_idx += 1
-    input("Type Enter to continue")
-
+    if visual_idx == 100:
+        quit()
+    # input("Type Enter to continue")
+# refactor to class
+# init, pred, update, resampling (stretch)
 def particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, sigma, m, steps, image):
     # print("--------------------------------------")
     print("Particle filter")
@@ -245,14 +249,13 @@ def particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, sigma, m, steps
     particles_t = None
     pred_cTr = torch.zeros((1, 6))
     for i in range(steps):
-        # print(f"resample step {i}")
         normal = torch.distributions.normal.Normal(torch.tensor([0.0]), torch.tensor([sigma]))
-        omega_r = normal.sample((m, 3, 3)).squeeze()
+        omega_r = normal.sample((m, 1, 4)).squeeze(3)
         omega_t = normal.sample((m, 3)).squeeze()
 
         # Step 1
         if particles_r is None:
-            rvec_minus_one = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr_minus_one[:, :3]).detach().cpu()
+            rvec_minus_one = kornia.geometry.conversions.angle_axis_to_quaternion(cTr_minus_one[:, :3]).detach().cpu()
             tvec_minus_one = cTr_minus_one[:,3:].detach().cpu()
 
             # m x 3 tensor of particles
@@ -262,6 +265,7 @@ def particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, sigma, m, steps
         particles_r += omega_r
         particles_t += omega_t
 
+        particles_r = kornia.geometry.conversions.quaternion_to_angle_axis(particles_r)
         # Step 2
         _, t_list = CtRNet.robot.get_joint_RT(joint_angles)
         points_3d = torch.from_numpy(np.array(t_list)).float()
@@ -313,10 +317,10 @@ def particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, sigma, m, steps
         max_w_idx = np.argmax(w)
         pred_cTr = torch.zeros((1, 6))
             # print(particles_r[max_w_idx, : ,:])
-        pred_cTr[0, :3] = kornia.geometry.conversions.rotation_matrix_to_angle_axis(particles_r[max_w_idx, :, :])
+        pred_cTr[0, :3] = particles_r[max_w_idx, :, :]
         pred_cTr[0, 3:] = particles_t[max_w_idx, :]
             
-    visualize_panda(z_t_hats_points, joint_angles, cTr_minus_one, image, points_2d, max_w_idx, points_2d_minus_one)
+    # visualize_panda(z_t_hats_points, joint_angles, cTr_minus_one, image, points_2d, max_w_idx, points_2d_minus_one)
 
     return pred_cTr.detach()
 
@@ -374,6 +378,7 @@ def update_publisher(cTr, img_msg, qua, T):
     # TODO: Not using the filtered output!
     # Rotating to ROS format
     cvTr= np.eye(4)
+    # potentially problematic? https://github.com/kornia/kornia/issues/317
     cvTr[:3, :3] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:, :3]).detach().cpu().numpy().squeeze()
     cvTr[:3, 3] = np.array(cTr[:, 3:].detach().cpu())
 
@@ -416,4 +421,8 @@ ats.registerCallback(gotData)
 rate = rospy.Rate(30) # 30hz
 
 while not rospy.is_shutdown():
-    rate.sleep()
+    try:
+        rate.sleep()
+
+    except rospy.exceptions.ROSTimeMovedBackwardsException as e:
+        continue
