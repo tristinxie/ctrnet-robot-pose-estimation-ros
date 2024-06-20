@@ -26,7 +26,7 @@ class ParticleFilter:
         for p_idx, particle in enumerate(self._particles):
              obs_prob = self._obs_model(particle, points_2d, ctrnet, joint_angles, cam, cTr, gamma)
              self._weights[p_idx] = self._weights[p_idx]*obs_prob
-        print(self._weights)
+        # print(self._weights)
         self.norm_weights()
 
         # TODO: resample if particles are depleted

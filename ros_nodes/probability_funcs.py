@@ -62,5 +62,6 @@ def point_feature_obs(state, points_2d, ctrnet, joint_angles, cam, cTr, gamma):
     projected_points = projected_points.squeeze(1).reshape(1, 14)
     detected_points = points_2d.reshape(1, 14).cpu().detach().numpy()
     # print(projected_points, detected_points)
+    # TODO Fix NaN problem
     prob = rbf_kernel(projected_points, Y=detected_points).squeeze()
     return prob
