@@ -231,7 +231,7 @@ if __name__ == "__main__":
                         init_distribution=sample_gaussian,
                         motion_model=additive_gaussian,
                         obs_model=point_feature_obs,
-                        num_particles=1000)
+                        num_particles=200)
     pf.init_filter(init_std)
     rospy.loginfo("Initailized particle filter")
 
@@ -280,7 +280,7 @@ if __name__ == "__main__":
             pred_cTr = torch.zeros((1, 6))
             pred_cTr[0, :3] = prev_cTr_r.cpu() + mean_particle_r
             pred_cTr[0, 3:] = prev_cTr_t.cpu() + mean_particle_t
-            prev_cTr = pred_cTr
+            # prev_cTr = pred_cTr
             pred_qua = kornia.geometry.conversions.angle_axis_to_quaternion(pred_cTr[:,:3]).detach().cpu() # xyzw
             pred_T = pred_cTr[:,3:].detach().cpu()
             update_publisher(cTr, new_image_msg, pred_qua.numpy().squeeze(), pred_T.numpy().squeeze())
