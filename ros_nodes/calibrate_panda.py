@@ -21,6 +21,7 @@ from models.CtRNet import CtRNet
 import cv2
 bridge = CvBridge()
 
+import pickle
 #os.environ['ROS_MASTER_URI']='http://192.168.1.116:11311'
 #os.environ['ROS_IP']='192.168.1.186'
 
@@ -76,8 +77,18 @@ image_dir = None
 
 image_idx = 0
 all_bTe = None
+all_joint_angles = None
+all_cTr = None
+all_points_2d = None
+all_segmentation = None
+all_joint_confidence = None
 def gotData(img_msg, joint_msg):
     global all_bTe
+    global all_joint_angles
+    global all_cTr
+    global all_points_2d
+    global all_segmentation
+    global all_joint_confidence
     # print("Received data!")
     try:
         # Convert your ROS Image message to OpenCV2
@@ -89,16 +100,20 @@ def gotData(img_msg, joint_msg):
         if args.use_gpu:
             image = image.cuda()
 
+        cTr, points_2d, segmentation, joint_confidence = CtRNet.inference_single_image(image, joint_angles)
         r_list, t_list = CtRNet.robot.get_joint_RT(joint_angles)
 
         bTe = np.eye(4)
         bTe[:-1, :-1] = r_list[8]
         bTe[:-1, -1] = t_list[8]
         img_np = to_numpy_img(image)
-        capture_data(img_np, bTe)
+        capture_data(img_np, bTe, joint_angles, cTr, points_2d, segmentation, joint_confidence)
         command = input(f"Enter to capture another image, {image_idx} so far. Any key to quit.") 
         if command != "":
             all_bTe_dict = {"armMat": all_bTe}
+            all_data_dict = {"all_bTe": all_bTe, "all_joint_angles": all_joint_angles, "all_cTr": all_cTr, "all_points_2d": all_points_2d, "all_segmentation": all_segmentation, "all_joint_confidence": all_joint_confidence}
+            pickle_path = os.path.join(curr_dir, "all_data.pkl")
+            pickle.dump(all_data_dict, open(pickle_path, "wb"))
             mat_path = os.path.join(curr_dir, "arm_mat.mat")
             savemat(mat_path, all_bTe_dict)
             rospy.signal_shutdown("Done.")
@@ -106,14 +121,33 @@ def gotData(img_msg, joint_msg):
     except CvBridgeError as e:
         print(e)
 
-def capture_data(img_np, bTe):
+def capture_data(img_np, bTe, joint_angles, cTr, points_2d, segmentation, joint_confidence):
     global image_idx
     global all_bTe
-            
+    global all_joint_angles
+    global all_cTr
+    global all_points_2d
+    global all_segmentation
+    global all_joint_confidence
+    
+    cTr = cTr.detach().cpu().numpy()
+    points_2d = points_2d.detach().cpu().numpy()
+    segmentation = segmentation.detach().cpu().numpy()
+    joint_confidence = joint_confidence.detach().cpu().numpy()
     if all_bTe is None:
         all_bTe = bTe.reshape(4,4,1)
+        all_joint_angles = joint_angles.reshape(1,7)
+        all_cTr = cTr.reshape(1,1,6)
+        all_points_2d = points_2d.reshape(1,1,7,2)
+        all_segmentation = segmentation.reshape(1,1,1,240,320)
+        all_joint_confidence = joint_confidence.reshape(1,7)
     else:
         all_bTe = np.concatenate((all_bTe, bTe.reshape(4,4,1)), axis=2)
+        all_joint_angles = np.concatenate((all_joint_angles, joint_angles.reshape(1,7)), axis=0)
+        all_cTr = np.concatenate((all_cTr, cTr.reshape(1,1,6)), axis=0)
+        all_points_2d = np.concatenate((all_points_2d, points_2d.reshape(1,1,7,2)), axis=0)
+        all_segmentation = np.concatenate((all_segmentation, segmentation.reshape(1,1,1,240,320)))
+        all_joint_confidence = np.concatenate((all_joint_confidence, joint_confidence.reshape(1,7)), axis=0)
     img_path = os.path.join(image_dir, f"image_{image_idx}.jpg")
     plt.imsave(img_path, img_np)
     image_idx += 1
