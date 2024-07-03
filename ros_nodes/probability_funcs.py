@@ -42,12 +42,15 @@ def projectPoints(points, K):
     
     return projected_point
 # State is: [ori_x, ori_y, ori_z, pos_x, pos_y, pos_z]
-def point_feature_obs(state, points_2d, ctrnet, joint_angles, cam, cTr, gamma):
+def point_feature_obs(states, points_2d, ctrnet, joint_angles, cam, cTr, gamma):
     #convert state to angle axis
+    num_particles = states.shape[0]
     T = np.eye(4)
-    # print(state.shape)
-    T[:-1, -1] = np.array(state[3:])
-    T[:-1, :-1] = axisAngleToRotationMatrix(state[:3])
+    T = np.tile(T, (num_particles, 1, 1))
+
+    T[:, :-1, -1] = states[:, 3:]
+    print(axisAngleToRotationMatrix(states[:, :3]).shape)
+    T[:, :-1, :-1] = axisAngleToRotationMatrix(states[:, :3])
     # Want to have final result of project image plane coords
     _, t_list = ctrnet.robot.get_joint_RT(joint_angles)
     p_t = t_list[[0,2,3,4,6,7,8]] # remove 1 and 5 links as they are overlapping with 2 and 6

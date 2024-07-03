@@ -14,17 +14,18 @@ class ParticleFilter:
         self._weights = self._weights/np.sum(self._weights)
 
     def init_filter(self, std):
-        print(self._particles.shape)
         num_particles = self._particles.shape[0]
         tiled_std = np.tile(std, (num_particles, 1))
         self._particles, _ = self._init_distribution(tiled_std)
 
     def predict(self, std):
-        for p_idx, particle in enumerate(self._particles):
-            self._particles[p_idx], _ = self._motion_model(particle, std)
+        num_particles = self._particles.shape[0]
+        tiled_std = np.tile(std, (num_particles, 1))
+        self._particles, _ = self._motion_model(tiled_std, std)
 
 
     def update(self, points_2d, ctrnet, joint_angles, cam, cTr, gamma):
+        print(self._obs_model(self._particles, points_2d, ctrnet, joint_angles, cam, cTr, gamma))
         for p_idx, particle in enumerate(self._particles):
              obs_prob = self._obs_model(particle, points_2d, ctrnet, joint_angles, cam, cTr, gamma)
              self._weights[p_idx] = self._weights[p_idx]*obs_prob
