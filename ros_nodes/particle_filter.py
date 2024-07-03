@@ -21,16 +21,17 @@ class ParticleFilter:
     def predict(self, std):
         num_particles = self._particles.shape[0]
         tiled_std = np.tile(std, (num_particles, 1))
-        self._particles, _ = self._motion_model(tiled_std, std)
+        self._particles, _ = self._motion_model(self._particles, tiled_std)
 
 
     def update(self, points_2d, ctrnet, joint_angles, cam, cTr, gamma):
+        # quit()
         print(self._obs_model(self._particles, points_2d, ctrnet, joint_angles, cam, cTr, gamma))
-        for p_idx, particle in enumerate(self._particles):
-             obs_prob = self._obs_model(particle, points_2d, ctrnet, joint_angles, cam, cTr, gamma)
-             self._weights[p_idx] = self._weights[p_idx]*obs_prob
+        # for p_idx, particle in enumerate(self._particles):
+        #      obs_prob = self._obs_model(particle, points_2d, ctrnet, joint_angles, cam, cTr, gamma)
+        #      self._weights[p_idx] = self._weights[p_idx]*obs_prob
         # print(self._weights)
-        self.norm_weights()
+        # self.norm_weights()
 
         # TODO: resample if particles are depleted
 

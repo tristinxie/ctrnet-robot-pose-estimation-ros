@@ -19,10 +19,14 @@ def additive_gaussian(state, std):
     return state + sample, prob
 
 def axisAngleToRotationMatrix(axis_angle):
-    angle = np.linalg.norm(axis_angle)
+    # returns (num_particles, 3, 3)
+    print(np.linalg.norm(axis_angle[0]))
+    print(np.linalg.norm(axis_angle[1]))
+    angle = np.linalg.norm(axis_angle, keepdims=True, axis=1)
+    print(angle)
     
-    if angle < 1e-5:
-        return np.eye(3)
+    # if angle < 1e-5:
+    #     return np.eye(3)
     
     axis  = axis_angle/angle
     cross_product_mat_axis = np.array([[0, -axis[2], axis[1]],
