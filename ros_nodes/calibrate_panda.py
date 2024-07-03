@@ -148,7 +148,7 @@ def capture_data(img_np, bTe, joint_angles, cTr, points_2d, segmentation, joint_
         all_points_2d = np.concatenate((all_points_2d, points_2d.reshape(1,1,7,2)), axis=0)
         all_segmentation = np.concatenate((all_segmentation, segmentation.reshape(1,1,1,240,320)))
         all_joint_confidence = np.concatenate((all_joint_confidence, joint_confidence.reshape(1,7)), axis=0)
-    img_path = os.path.join(image_dir, f"image_{image_idx}.jpg")
+    img_path = os.path.join(image_dir, f"image_{image_idx}.png")
     plt.imsave(img_path, img_np)
     image_idx += 1
 

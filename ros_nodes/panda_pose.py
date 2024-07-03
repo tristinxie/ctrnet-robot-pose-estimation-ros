@@ -139,7 +139,7 @@ def visualize_panda(particles, joint_angles, cTr, image, points_2d, max_w_idx, p
              ]
     robot_renderer = CtRNet.setup_robot_renderer(mesh_files)
     robot_mesh = robot_renderer.get_robot_mesh(joint_angles)
-    rendered_image = CtRNet.render_single_robot_mask(cTr.squeeze().detach().cuda(), robot_mesh, robot_renderer)
+    # rendered_image = CtRNet.render_single_robot_mask(cTr.squeeze().detach().cuda(), robot_mesh, robot_renderer)
     img_np = to_numpy_img(image)
     img_np = 0.0* np.ones(img_np.shape) + img_np * 0.6
     red = (1,0,0)
