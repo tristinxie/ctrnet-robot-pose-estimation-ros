@@ -31,7 +31,9 @@ args.n_kp = 7
 args.scale = 0.15625
 args.height = 1536
 args.width = 2048
-args.fx, args.fy, args.px, args.py = 960.41357421875, 960.22314453125, 1021.7171020507812, 776.2381591796875
+# args.fx, args.fy, args.px, args.py = 960.41357421875, 960.22314453125, 1021.7171020507812, 776.2381591796875
+args.fx, args.fy, args.px, args.py = 967.2597045898438, 967.2623291015625, 1024.62451171875, 772.18994140625
+
 # scale the camera parameters
 args.width = int(args.width * args.scale)
 args.height = int(args.height * args.scale)
@@ -85,8 +87,8 @@ def read_data_dir_and_write_figure(data_dir_name):
     input_img = plt.imread(input_img_path)
 
     red = (1,0,0)
-    input_img = 0.0* np.ones(input_img.shape) + input_img * 0.6
-    input_img = overwrite_image(input_img, all_data["all_points_2d"][input_img_idx].squeeze().astype(int), color=red)
+    input_img_anno = 0.0* np.ones(input_img.shape) + input_img * 0.6
+    input_img_anno = overwrite_image(input_img_anno, all_data["all_points_2d"][input_img_idx].squeeze().astype(int), color=red)
 
 
     output_img_path = os.path.join(curr_output_dir, f"outputImage{output_img_idx}.png")
@@ -96,7 +98,7 @@ def read_data_dir_and_write_figure(data_dir_name):
     rows, cols = 2, 2
 
     fig.add_subplot(rows, cols, 1)
-    plt.imshow(input_img)
+    plt.imshow(input_img_anno)
     plt.axis("off")
     plt.title("CtRNet Annotated")
     colors = [red]
@@ -117,12 +119,15 @@ def read_data_dir_and_write_figure(data_dir_name):
     plt.title("Calibration output")
 
     fig.add_subplot(rows, cols, 3)
-    plt.imshow(ctrnet_rendered_image.squeeze().detach().cpu().numpy())
+
+    plt.imshow(input_img)
+    plt.imshow(ctrnet_rendered_image.squeeze().detach().cpu().numpy(), cmap="RdYlGn", alpha=0.2)
     plt.axis("off")
     plt.title("CtRNet Robot Mask")
 
     fig.add_subplot(rows, cols, 4)
-    plt.imshow(calib_rendered_image.squeeze().detach().cpu().numpy())
+    plt.imshow(input_img)
+    plt.imshow(calib_rendered_image.squeeze().detach().cpu().numpy(), cmap="RdYlGn", alpha=0.2)
     plt.axis("off")
     plt.title("Calibrated Robot Mask")
 

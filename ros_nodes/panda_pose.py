@@ -53,7 +53,7 @@ args.n_kp = 7
 args.scale = 0.15625
 args.height = 1536
 args.width = 2048
-args.fx, args.fy, args.px, args.py = 960.41357421875, 960.22314453125, 1021.7171020507812, 776.2381591796875
+args.fx, args.fy, args.px, args.py = 967.2597045898438, 967.2623291015625, 1024.62451171875, 772.18994140625
 # scale the camera parameters
 args.width = int(args.width * args.scale)
 args.height = int(args.height * args.scale)
