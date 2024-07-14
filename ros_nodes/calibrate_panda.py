@@ -6,6 +6,10 @@ sys.path.append(base_dir)
 
 import numpy as np
 import rospy
+from actionlib import SimpleActionClient
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from control_msgs.msg import FollowJointTrajectoryAction, \
+                             FollowJointTrajectoryGoal, FollowJointTrajectoryResult
 from scipy.io import savemat
 from cv_bridge import CvBridge, CvBridgeError
 from message_filters import ApproximateTimeSynchronizer, Subscriber
@@ -20,7 +24,7 @@ from models.CtRNet import CtRNet
 
 import cv2
 bridge = CvBridge()
-
+import time
 import pickle
 #os.environ['ROS_MASTER_URI']='http://192.168.1.116:11311'
 #os.environ['ROS_IP']='192.168.1.186'
@@ -82,13 +86,18 @@ all_cTr = None
 all_points_2d = None
 all_segmentation = None
 all_joint_confidence = None
+num_poses = int(input("Enter number of random poses (some might not be usable): "))
+prev_img_msg = None
+home_pose = None
 def gotData(img_msg, joint_msg):
+    # print("got data")
     global all_bTe
     global all_joint_angles
     global all_cTr
     global all_points_2d
     global all_segmentation
     global all_joint_confidence
+    global home_pose
     # print("Received data!")
     try:
         # Convert your ROS Image message to OpenCV2
@@ -107,9 +116,13 @@ def gotData(img_msg, joint_msg):
         bTe[:-1, :-1] = r_list[8]
         bTe[:-1, -1] = t_list[8]
         img_np = to_numpy_img(image)
+        # input(f"Enter to capture another image, {image_idx} so far. Any key to quit.") 
         capture_data(img_np, bTe, joint_angles, cTr, points_2d, segmentation, joint_confidence)
-        command = input(f"Enter to capture another image, {image_idx} so far. Any key to quit.") 
-        if command != "":
+        move_panda(client, joint_angles)
+        rospy.sleep(7)
+        if image_idx >= num_poses:
+            move_panda(client, joint_angles, home_only=True)
+            print(all_joint_angles)
             all_bTe_dict = {"armMat": all_bTe}
             all_data_dict = {"all_bTe": all_bTe, "all_joint_angles": all_joint_angles, "all_cTr": all_cTr, "all_points_2d": all_points_2d, "all_segmentation": all_segmentation, "all_joint_confidence": all_joint_confidence}
             pickle_path = os.path.join(curr_dir, "all_data.pkl")
@@ -129,6 +142,7 @@ def capture_data(img_np, bTe, joint_angles, cTr, points_2d, segmentation, joint_
     global all_points_2d
     global all_segmentation
     global all_joint_confidence
+    global home_pose
     
     cTr = cTr.detach().cpu().numpy()
     points_2d = points_2d.detach().cpu().numpy()
@@ -141,6 +155,7 @@ def capture_data(img_np, bTe, joint_angles, cTr, points_2d, segmentation, joint_
         all_points_2d = points_2d.reshape(1,1,7,2)
         all_segmentation = segmentation.reshape(1,1,1,240,320)
         all_joint_confidence = joint_confidence.reshape(1,7)
+        home_pose = joint_angles
     else:
         all_bTe = np.concatenate((all_bTe, bTe.reshape(4,4,1)), axis=2)
         all_joint_angles = np.concatenate((all_joint_angles, joint_angles.reshape(1,7)), axis=0)
@@ -151,6 +166,93 @@ def capture_data(img_np, bTe, joint_angles, cTr, points_2d, segmentation, joint_
     img_path = os.path.join(image_dir, f"image_{image_idx}.png")
     plt.imsave(img_path, img_np)
     image_idx += 1
+
+def move_panda(client, joint_angles, home_only=False):
+    global home_pose
+    joint_link_names = [
+        'panda_joint1',
+        'panda_joint2',
+        'panda_joint3',
+        'panda_joint4',
+        'panda_joint5',
+        'panda_joint6',
+        'panda_joint7',
+    ]
+    curr_pose = joint_angles
+    home_delta_pose = home_pose - curr_pose
+    delta_pose = np.random.normal(0, 0.05, size=7)
+
+    # Add all trajectory points to the goal trajectory.
+    goal = FollowJointTrajectoryGoal()
+    goal.trajectory.joint_names = joint_link_names
+    total_duration = 0.0
+
+    new_pose = curr_pose + delta_pose
+    if not (curr_pose == home_pose).all():
+        home_point = JointTrajectoryPoint()
+        interval_time = 1
+        total_duration += interval_time
+        home_point.time_from_start = rospy.Duration.from_sec(
+            total_duration
+        )
+
+        home_point.positions = home_pose.tolist()
+        home_point.velocities = [dq_i/interval_time for dq_i in home_delta_pose]
+
+        goal.trajectory.points.append(home_point)
+
+    if not home_only:
+        new_point = JointTrajectoryPoint()
+        interval_time = 1
+        total_duration += interval_time
+        new_point.time_from_start = rospy.Duration.from_sec(
+            total_duration
+        )
+
+        new_point.positions = new_pose.tolist()
+        new_point.velocities = [dq_i/interval_time for dq_i in delta_pose]
+
+        goal.trajectory.points.append(new_point)
+
+    # Set the velocity of the last state to be 0.0
+    goal.trajectory.points[-1].velocities = [0.0]*7
+
+    goal.goal_time_tolerance = rospy.Duration.from_sec(total_duration)
+
+    rospy.loginfo('Sending trajectory Goal to move to a current config')
+    client.send_goal_and_wait(goal)
+
+    result = client.get_result()
+    if result.error_code != FollowJointTrajectoryResult.SUCCESSFUL:
+        rospy.logerr('move_to_start: Movement was not successful: ' + {
+            FollowJointTrajectoryResult.INVALID_GOAL:
+            """
+            The joint pose you want to move to is invalid (e.g. unreachable, singularity...).
+            Is the 'joint_pose' reachable?
+            """,
+
+            FollowJointTrajectoryResult.INVALID_JOINTS:
+            """
+            The joint pose you specified is for different joints than the joint trajectory controller
+            is claiming. Does you 'joint_pose' include all 7 joints of the robot?
+            """,
+
+            FollowJointTrajectoryResult.PATH_TOLERANCE_VIOLATED:
+            """
+            During the motion the robot deviated from the planned path too much. Is something blocking
+            the robot?
+            """,
+
+            FollowJointTrajectoryResult.GOAL_TOLERANCE_VIOLATED:
+            """
+            After the motion the robot deviated from the desired goal pose too much. Probably the robot
+            didn't reach the joint_pose properly
+            """,
+        }[result.error_code])
+    else:
+        rospy.loginfo('Successfully moved into target pose')
+
+
 
 def create_data_dir(data_dir_name):
     global curr_dir
@@ -177,6 +279,13 @@ def create_data_dir(data_dir_name):
 
 if __name__ == "__main__":
     rospy.init_node('calibrate_panda')
+    # Move panda client
+    print("Move panda to the center of the camera frame in a neutral position before starting!")
+    action = '/effort_joint_trajectory_controller/follow_joint_trajectory'
+    client = SimpleActionClient(action, FollowJointTrajectoryAction)
+    rospy.loginfo("move_to_start: Waiting for '" + action + "' action to come up")
+    client.wait_for_server()
+
     # Define your image topic
     image_topic = "/rgb/image_raw"
     robot_joint_topic = "/joint_states"
