@@ -1,6 +1,7 @@
 import sys
 import os
 import shutil
+import subprocess
 base_dir = os.path.abspath(".")
 sys.path.append(base_dir)
 
@@ -122,13 +123,16 @@ def gotData(img_msg, joint_msg):
         rospy.sleep(7)
         if image_idx >= num_poses:
             move_panda(client, joint_angles, home_only=True)
-            print(all_joint_angles)
             all_bTe_dict = {"armMat": all_bTe}
             all_data_dict = {"all_bTe": all_bTe, "all_joint_angles": all_joint_angles, "all_cTr": all_cTr, "all_points_2d": all_points_2d, "all_segmentation": all_segmentation, "all_joint_confidence": all_joint_confidence}
             pickle_path = os.path.join(curr_dir, "all_data.pkl")
             pickle.dump(all_data_dict, open(pickle_path, "wb"))
             mat_path = os.path.join(curr_dir, "arm_mat.mat")
             savemat(mat_path, all_bTe_dict)
+
+            # Call matlab
+            # subprocess.run(["matlab -nodisplay -nosplash -nodesktop -r 'run('/home/matlab_calibrate/script.m');exit;'"])
+
             rospy.signal_shutdown("Done.")
 
     except CvBridgeError as e:
@@ -180,14 +184,15 @@ def move_panda(client, joint_angles, home_only=False):
     ]
     curr_pose = joint_angles
     home_delta_pose = home_pose - curr_pose
-    delta_pose = np.random.normal(0, 0.05, size=7)
+    delta_pose = np.random.uniform(low=-0.25, high=0.25, size=7)
+    # delta_pose = np.random.normal(0, 0.1, size=7)
 
     # Add all trajectory points to the goal trajectory.
     goal = FollowJointTrajectoryGoal()
     goal.trajectory.joint_names = joint_link_names
     total_duration = 0.0
 
-    new_pose = curr_pose + delta_pose
+    new_pose = home_pose + delta_pose
     if not (curr_pose == home_pose).all():
         home_point = JointTrajectoryPoint()
         interval_time = 1
