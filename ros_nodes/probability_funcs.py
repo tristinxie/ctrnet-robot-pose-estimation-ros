@@ -36,13 +36,13 @@ def additive_gaussian(state, std):
 
 def projectPoints(points, K):
     # points is Nx7x3 np array
-    print(points)
+    # print(points)
     num_particles = points.shape[0]
     K = np.tile(K, (num_particles, 1, 1))
-    points = np.reshape(points, (num_particles, 3, 7))
+    points = points.transpose((0,2,1))
     dehomog_pts = points / np.expand_dims(points[:,-1,:], 1)
     # print(f"HERE {dehomog_pts}")
-    # projected_point = np.matmul(K, dehomog_pts)
+    projected_point = np.matmul(K, dehomog_pts).transpose((0,2,1))[:,:,:-1]
     # print(projected_point[0])
     
     # points_homogeneous = np.concatenate( (points, np.ones((1, points.shape[1]))) )
@@ -78,21 +78,23 @@ def point_feature_obs(states, points_2d, ctrnet, joint_angles, cam, cTr, gamma):
     tvec = np.float64(p_cTr[0, :3, 3:])
     # print(rvec)
     # print(tvec)
+    np.set_printoptions(suppress=True)
     p_c_1 = np.matmul(cTr_mat, T) 
-    p_c_2 = np.reshape(np.tile(np.concatenate((p_t, np.ones((p_t.shape[0], 1))), axis=1), (num_particles, 1, 1)), (num_particles, 4, 7))
+    p_c_2 = np.tile(np.transpose(np.concatenate((p_t, np.ones((p_t.shape[0], 1))), axis=1)), (num_particles, 1, 1))
+    # print(f"p_c_1 here: {p_c_1[0]}")
+    # print(f"p_c_2 here: {p_c_2[0]}")
     # print(p_c_1.shape, p_c_2.shape)
     p_c = np.matmul(p_c_1, p_c_2)
+    # print(p_c[0].T)
     # print(p_c.shape)
-    p_c = np.reshape(p_c, (num_particles, 7, 4))[:, :, :-1]
-    # print(p_c.shape)
+    p_c = p_c.transpose((0,2,1))[:,:,:-1]
     projected_points = projectPoints(p_c, K)
     # print(projected_points.shape)
     projected_points_cv2, _ = cv2.projectPoints(p_t, rvec, tvec, K, None)
     # print(np.isclose(projected_points[0], projected_points_cv2.squeeze(1)))
-    np.set_printoptions(suppress=True)
 
-    print(projected_points[0])
-    print(projected_points_cv2.squeeze(1))
+    # print(projected_points_cv2.squeeze(1))
+    # print(projected_points[0])
     # print(projected_points)
     # print(projected_points_cv2)
 

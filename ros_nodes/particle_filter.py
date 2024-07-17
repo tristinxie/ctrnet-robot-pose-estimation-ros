@@ -26,7 +26,9 @@ class ParticleFilter:
 
     def update(self, points_2d, ctrnet, joint_angles, cam, cTr, gamma):
         # quit()
-        print(self._obs_model(self._particles, points_2d, ctrnet, joint_angles, cam, cTr, gamma))
+        obs_probs = self._obs_model(self._particles, points_2d, ctrnet, joint_angles, cam, cTr, gamma)
+        self._weights = self._weights*obs_probs[:, 0]
+        self.norm_weights()
         # for p_idx, particle in enumerate(self._particles):
         #      obs_prob = self._obs_model(particle, points_2d, ctrnet, joint_angles, cam, cTr, gamma)
         #      self._weights[p_idx] = self._weights[p_idx]*obs_prob

@@ -232,7 +232,7 @@ if __name__ == "__main__":
                         init_distribution=sample_gaussian,
                         motion_model=additive_gaussian,
                         obs_model=point_feature_obs,
-                        num_particles=200)
+                        num_particles=1000)
     pf.init_filter(init_std)
     rospy.loginfo("Initailized particle filter")
 
