@@ -223,7 +223,7 @@ if __name__ == "__main__":
     ats.registerCallback(gotData)
 
 
-    joint_confident_thresh = 7
+    joint_confident_thresh = 0
     init_std = np.array([
                 1.0e-2, 1.0e-2, 1.0e-2, # ori
                 1.0e-3, 1.0e-3, 1.0e-3, # pos
