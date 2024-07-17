@@ -131,7 +131,8 @@ def gotData(img_msg, joint_msg):
             savemat(mat_path, all_bTe_dict)
 
             # Call matlab
-            # subprocess.run(["matlab -nodisplay -nosplash -nodesktop -r 'run('/home/matlab_calibrate/script.m');exit;'"])
+            data_dir_name = os.path.basename(os.path.normpath(curr_dir))
+            subprocess.run(f"matlab -nodisplay -nosplash -nodesktop -r 'Panda {data_dir_name};exit;'", cwd=matlab_calib_dir, shell=True)
 
             rospy.signal_shutdown("Done.")
 
