@@ -131,12 +131,12 @@ def gotData(img_msg, joint_msg):
             return
         elif filtering_method == "particle":
             if cTr_minus_one is not None:
-                pred_cTr = particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, 0.01, 10000, 1, image)
+                pred_cTr = particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, 0.005, 2000, 1, image)
                 cTr_minus_one = pred_cTr
                 points_2d_minus_one = points_2d
                 pred_qua = kornia.geometry.conversions.angle_axis_to_quaternion(pred_cTr[:,:3]).detach().cpu() # xyzw
                 pred_T = pred_cTr[:,3:].detach().cpu()
-                update_publisher(cTr, img_msg, pred_qua.numpy().squeeze(), pred_T.numpy().squeeze())
+                update_publisher(pred_cTr, img_msg, pred_qua.numpy().squeeze(), pred_T.numpy().squeeze())
             else:
                 print(f"Skipping because t-1 is {cTr_minus_one}")
                 cTr_minus_one = cTr
