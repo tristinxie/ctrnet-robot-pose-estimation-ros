@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import os
+import warnings
 base_dir = os.path.abspath(".")
 sys.path.append(base_dir)
 
@@ -167,25 +168,21 @@ def visualize_panda(particles, joint_angles, cTr, image, points_2d, max_w_idx, p
         quit()
     # input("Type Enter to continue")
 
-def update_publisher(cTr, img_msg, qua, T):
-    p = geometry_msgs.msg.PoseStamped()
-    p.header = img_msg.header
-    p.pose.position.x = T[0]
-    p.pose.position.y = T[1]
-    p.pose.position.z = T[2]
-    p.pose.orientation.x = qua[0]
-    p.pose.orientation.y = qua[1]
-    p.pose.orientation.z = qua[2]
-    p.pose.orientation.w = qua[3]
+def update_publisher(cTr, img_msg):
+    # p = geometry_msgs.msg.PoseStamped()
+    # p.header = img_msg.header
+    # p.pose.position.x = T[0]
+    # p.pose.position.y = T[1]
+    # p.pose.position.z = T[2]
+    # p.pose.orientation.x = qua[0]
+    # p.pose.orientation.y = qua[1]
+    # p.pose.orientation.z = qua[2]
+    # p.pose.orientation.w = qua[3]
     #print(p)
-    pose_pub.publish(p)
-
-    # TODO: Not using the filtered output!
-    # Rotating to ROS format
+    # pose_pub.publish(p)
     cvTr= np.eye(4)
-    # potentially problematic? https://github.com/kornia/kornia/issues/317
-    cvTr[:3, :3] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:, :3]).detach().cpu().numpy().squeeze()
-    cvTr[:3, 3] = np.array(cTr[:, 3:].detach().cpu())
+    cvTr[:3, :3] = kornia.geometry.conversions.quaternion_to_rotation_matrix(cTr[:, :4]).detach().cpu().numpy().squeeze()
+    cvTr[:3, 3] = np.array(cTr[:, 4:].detach().cpu())
 
     # ROS camera to CV camera transform
     cTcv = np.array([[0, 0 , 1, 0], [-1, 0, 0 , 0], [0, -1, 0, 0], [0, 0, 0, 1]])
@@ -207,6 +204,8 @@ def update_publisher(cTr, img_msg, qua, T):
     br.sendTransform(t)
 
 if __name__ == "__main__":
+    warnings.filterwarnings("ignore", message="`XYZW` quaternion coefficient order is deprecated and will be removed after > 0.6. Please use `QuaternionCoeffOrder.WXYZ` instead.")
+
     rospy.init_node('panda_pose')
     # Define your image topic
     image_topic = "/rgb/image_raw"
@@ -223,12 +222,11 @@ if __name__ == "__main__":
     ats.registerCallback(gotData)
 
 
-    joint_confident_thresh = 7
     init_std = np.array([
-                1.0e-2, 1.0e-2, 1.0e-2, # ori
+                1.0e-2, 1.0e-2, 1.0e-2, 1.0e-2, # ori
                 1.0e-3, 1.0e-3, 1.0e-3, # pos
             ])
-    pf = ParticleFilter(num_states=6,
+    pf = ParticleFilter(num_states=7,
                         init_distribution=sample_gaussian,
                         motion_model=additive_gaussian,
                         obs_model=point_feature_obs,
@@ -239,7 +237,7 @@ if __name__ == "__main__":
     # Main loop:
     rate = rospy.Rate(30) # 30hz
     prev_cTr = None
-
+    use_particle_filter = True
     while not rospy.is_shutdown():
         if new_data:
             # print("here")
@@ -252,18 +250,27 @@ if __name__ == "__main__":
             new_image_msg = image_msg
             new_data = False
 
+            if use_particle_filter == False:
+                print("PARTICLE FILTER TURNED OFF")
+                # pred_qua = kornia.geometry.conversions.angle_axis_to_quaternion(cTr[:,:3]).detach().cpu() # xyzw
+                pred_T = cTr[:,3:].detach().cpu()
+                update_publisher(new_cTr, new_image_msg)
+                # update_publisher(new_cTr, new_image_msg, pred_qua.cpu().detach().numpy().squeeze(), pred_T.cpu().detach().numpy().squeeze())
+                continue
+
             if prev_cTr is None:
                 prev_cTr = new_cTr
                 continue
 
             # Skip if not CtRNet not confident in joints
-            num_joint_confident = torch.sum(torch.gt(joint_confidence, 0.90))
-            if num_joint_confident < joint_confident_thresh:
-                print(f"Only confident with {num_joint_confident} joints, skipping...")
-                continue
+            # joint_confident_thresh = 0
+            # num_joint_confident = torch.sum(torch.gt(joint_confidence, 0.95))
+            # if num_joint_confident < joint_confident_thresh:
+            #     print(f"Only confident with {num_joint_confident} joints, skipping...")
+            #     continue
             
             # Predict Particle filter
-            pred_std = np.array([1.0e-4, 1.0e-4, 1.0e-4,
+            pred_std = np.array([1.0e-4, 1.0e-4, 1.0e-4, 1.0e-4,
                                 2.5e-5, 2.5e-5, 2.5e-5])
 
             pf.predict(pred_std)
@@ -274,15 +281,19 @@ if __name__ == "__main__":
             pf.update(points_2d, CtRNet, joint_angles, cam, prev_cTr, gamma)
 
             mean_particle = pf.get_mean_particle()
-            mean_particle_r = torch.from_numpy(mean_particle[:3])
-            mean_particle_t = torch.from_numpy(mean_particle[3:])
-            prev_cTr_r = prev_cTr[:, :3]
+            mean_particle_r = torch.from_numpy(mean_particle[:4])
+            mean_particle_t = torch.from_numpy(mean_particle[4:])
+
+            prev_cTr_r = kornia.geometry.conversions.angle_axis_to_quaternion(prev_cTr[:, :3])
             prev_cTr_t = prev_cTr[:, 3:]
-            pred_cTr = torch.zeros((1, 6))
-            pred_cTr[0, :3] = prev_cTr_r.cpu() + mean_particle_r
-            pred_cTr[0, 3:] = prev_cTr_t.cpu() + mean_particle_t
-            pred_qua = kornia.geometry.conversions.angle_axis_to_quaternion(pred_cTr[:,:3]).detach().cpu() # xyzw
-            pred_T = pred_cTr[:,3:].detach().cpu()
-            update_publisher(pred_cTr, new_image_msg, pred_qua.cpu().detach().numpy().squeeze(), pred_T.cpu().detach().numpy().squeeze())
+
+            pred_cTr = torch.zeros((1, 7))
+            pred_cTr[0, :4] = prev_cTr_r.cpu() + mean_particle_r
+            pred_cTr[0, 4:] = prev_cTr_t.cpu() + mean_particle_t
+
+            # pred_qua = kornia.geometry.conversions.angle_axis_to_quaternion(pred_cTr[:,:3]).detach().cpu() # xyzw
+            # pred_T = pred_cTr[:,3:].detach().cpu()
+            # update_publisher(pred_cTr, new_image_msg, pred_qua.cpu().detach().numpy().squeeze(), pred_T.cpu().detach().numpy().squeeze())
+            update_publisher(pred_cTr, new_image_msg)
 
         rate.sleep()

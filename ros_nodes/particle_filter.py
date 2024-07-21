@@ -17,16 +17,15 @@ class ParticleFilter:
     def init_filter(self, std):
         num_particles = self._particles.shape[0]
         tiled_std = np.tile(std, (num_particles, 1))
-        self._particles, _ = self._init_distribution(tiled_std)
+        self._particles = self._init_distribution(tiled_std)
 
     def predict(self, std):
         num_particles = self._particles.shape[0]
         tiled_std = np.tile(std, (num_particles, 1))
-        self._particles, _ = self._motion_model(self._particles, tiled_std)
+        self._particles = self._motion_model(self._particles, tiled_std)
 
 
     def update(self, points_2d, ctrnet, joint_angles, cam, cTr, gamma):
-        # quit()
         num_particles = self._particles.shape[0]
         obs_probs = self._obs_model(self._particles, points_2d, ctrnet, joint_angles, cam, cTr, gamma)
         self._weights = self._weights*obs_probs[:, 0]
@@ -39,11 +38,12 @@ class ParticleFilter:
 
         # TODO: resample if particles are depleted
         thresh = 1./np.sum(self._weights**2)
-        print(thresh)
+        # print(thresh)
         if self._min_num_effective_particles > thresh or np.isnan(thresh):
-            indices = filterpy.monte_carlo.residual_resample(self._weights)
+            indices = filterpy.monte_carlo.stratified_resample(self._weights)
             self._particles = self._particles[indices, :]
             self._weights = np.ones((num_particles))/float(num_particles)
+
     def resample(self):
         pass
 

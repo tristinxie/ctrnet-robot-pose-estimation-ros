@@ -10,13 +10,11 @@ from sklearn.metrics.pairwise import rbf_kernel
 def sample_gaussian(std):
     m = np.zeros(std.shape)
     sample = norm.rvs(m, std)
-    prob_individual = norm.pdf(sample, m, std)
-    prob_individual[np.isnan(prob_individual)] = 1.0
-    return sample, np.prod(prob_individual)
+    return sample
 
 def additive_gaussian(state, std):
-    sample, prob = sample_gaussian(std)
-    return state + sample, prob
+    sample = sample_gaussian(std)
+    return state + sample
 
 # def axisAngleToRotationMatrix(axis_angle):
 #     # returns (num_particles, 3, 3)
@@ -57,10 +55,10 @@ def point_feature_obs(states, points_2d, ctrnet, joint_angles, cam, cTr, gamma):
     T = np.eye(4)
     T = np.tile(T, (num_particles, 1, 1))
 
-    T[:, :-1, -1] = states[:, 3:]
+    T[:, :-1, -1] = states[:, 4:]
     # print(axisAngleToRotationMatrix(states[:, :3]).shape)
     
-    T[:, :-1, :-1] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(torch.from_numpy(states[:, :3]))
+    T[:, :-1, :-1] = kornia.geometry.conversions.quaternion_to_rotation_matrix(torch.from_numpy(states[:, :4]))
     # T[:, :-1, :-1] = axisAngleToRotationMatrix(states[:, :3])
     # Want to have final result of project image plane coords
     _, t_list = ctrnet.robot.get_joint_RT(joint_angles)
@@ -90,11 +88,10 @@ def point_feature_obs(states, points_2d, ctrnet, joint_angles, cam, cTr, gamma):
     p_c = p_c.transpose((0,2,1))[:,:,:-1]
     projected_points = projectPoints(p_c, K)
     # print(projected_points.shape)
-    projected_points_cv2, _ = cv2.projectPoints(p_t, rvec, tvec, K, None)
+    # projected_points_cv2, _ = cv2.projectPoints(p_t, rvec, tvec, K, None)
     # print(np.isclose(projected_points[0], projected_points_cv2.squeeze(1)))
 
     # print(projected_points_cv2.squeeze(1))
-    # print(projected_points[0])
     # print(projected_points)
     # print(projected_points_cv2)
 
@@ -107,6 +104,5 @@ def point_feature_obs(states, points_2d, ctrnet, joint_angles, cam, cTr, gamma):
     if np.any(np.isnan(projected_points)) or np.any(np.isnan(detected_points)):
         print(projected_points)
         print(detected_points)
-
     prob = rbf_kernel(projected_points, Y=detected_points).squeeze()
     return prob
