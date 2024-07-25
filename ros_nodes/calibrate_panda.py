@@ -90,6 +90,7 @@ all_joint_confidence = None
 num_poses = int(input("Enter number of random poses (some might not be usable): "))
 prev_img_msg = None
 home_pose = None
+client = None
 def gotData(img_msg, joint_msg):
     # print("got data")
     global all_bTe
@@ -99,6 +100,7 @@ def gotData(img_msg, joint_msg):
     global all_segmentation
     global all_joint_confidence
     global home_pose
+    global client
     # print("Received data!")
     try:
         # Convert your ROS Image message to OpenCV2
@@ -127,7 +129,7 @@ def gotData(img_msg, joint_msg):
             all_data_dict = {"all_bTe": all_bTe, "all_joint_angles": all_joint_angles, "all_cTr": all_cTr, "all_points_2d": all_points_2d, "all_segmentation": all_segmentation, "all_joint_confidence": all_joint_confidence}
             pickle_path = os.path.join(curr_dir, "all_data.pkl")
             pickle.dump(all_data_dict, open(pickle_path, "wb"))
-            mat_path = os.path.join(curr_dir, "arm_mat.mat")
+            mat_path = os.path.join(curr_dir, "bte.mat")
             savemat(mat_path, all_bTe_dict)
 
             # Call matlab
@@ -282,9 +284,9 @@ def create_data_dir(data_dir_name):
             else:
                 print("Please enter y or n only")
 
-
-if __name__ == "__main__":
-    rospy.init_node('calibrate_panda')
+def main():
+    global client
+    # rospy.init_node('calibrate_panda')
     # Move panda client
     print("Move panda to the center of the camera frame in a neutral position before starting!")
     action = '/effort_joint_trajectory_controller/follow_joint_trajectory'
@@ -311,3 +313,6 @@ if __name__ == "__main__":
 
     while not rospy.is_shutdown():
         rate.sleep()
+
+if __name__ == "__main__":
+    main()
