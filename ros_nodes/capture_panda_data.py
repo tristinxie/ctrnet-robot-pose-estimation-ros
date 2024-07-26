@@ -77,7 +77,7 @@ def preprocess_img(cv_img,args):
     new_size = (int(width*args.scale),int(height*args.scale))
     image_pil = image_pil.resize(new_size)
     image = trans_to_tensor(image_pil)
-    return image
+    return image, image_pil
 
 #############################################################################3
 
@@ -86,21 +86,21 @@ visual_idx = 0
 
 new_data = False
 points_2d = None
-image = None
+image_pil = None
 joint_angles = None
 cTr = None
 joint_confidence = None
 image_msg = None
 def gotData(img_msg, joint_msg):
     #global start
-    global new_data, points_2d, image, joint_angles, cTr, joint_confidence, image_msg
+    global new_data, points_2d, image_pil, joint_angles, cTr, joint_confidence, image_msg
     image_msg = img_msg
     # print("Received data!")
     try:
         # Convert your ROS Image message to OpenCV2
         cv2_img = bridge.imgmsg_to_cv2(img_msg, "bgr8")
         cv_img = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2RGB)
-        image = preprocess_img(cv_img,args)
+        image, image_pil = preprocess_img(cv_img,args)
 
         joint_angles = np.array(joint_msg.position)[[0,1,2,3,4,5,6]]
 
@@ -120,6 +120,22 @@ def gotData(img_msg, joint_msg):
         print(e)
     new_data = True
 
+def save_data(ep_info, ep_name, ep_path, images, joint_angles, timestamps):
+    print("saving data...")
+    for i, timestamp in enumerate(timestamps):
+        curr_image = images[i]
+        image_file_name = f"{ep_name}_f{i}.png"
+        image_path = os.path.join(ep_path, image_file_name)
+        curr_image.save(image_path)
+
+        step_obj = {"img_file": image_file_name, "joint_angles": joint_angles[i].tolist()}
+        ep_info["steps"][timestamp] = step_obj
+
+    json_path = os.path.join(ep_path, "info.json")
+    with open(json_path, "w") as f:
+        json.dump(ep_info, f, indent=4)
+
+
 if __name__ == "__main__":
     warnings.filterwarnings("ignore", message="`XYZW` quaternion coefficient order is deprecated and will be removed after > 0.6. Please use `QuaternionCoeffOrder.WXYZ` instead.")
 
@@ -134,11 +150,12 @@ if __name__ == "__main__":
 
     ats = ApproximateTimeSynchronizer([image_sub, robot_j_sub], queue_size=10, slop=5)
     ats.registerCallback(gotData)
-    dataset_dir = os.path.join(args.base_dir, "panda_cartesian_dataset")
+    dataset_dir = os.path.join(args.base_dir, "panda_dataset")
     # Create episode folder
     ep_num = len(os.listdir(dataset_dir))+1
-    ep_name = f"panda_c_{ep_num}"
-    os.mkdir(os.path.join(dataset_dir, ep_name))
+    ep_name = f"panda_{ep_num}"
+    ep_path = os.path.join(dataset_dir, ep_name)
+    os.mkdir(ep_path)
 
     # Calibrate panda
     ref_ep = None
@@ -162,27 +179,31 @@ if __name__ == "__main__":
     calib_cTr_mat_path = os.path.join(ref_output_dir, "calib_ctr.mat")
     calib_cTr = loadmat(calib_cTr_mat_path)["TBaseAA"]
 
-    ep_info["calibration_info"]["extrinsic"] = calib_cTr
-    ep_info["calibration_info"]["intrinsic"] = np.float64(CtRNet.intrinsics)
+    ep_info["calibration_info"]["extrinsic"] = calib_cTr.tolist()
+    ep_info["calibration_info"]["intrinsic"] = np.float64(CtRNet.intrinsics).tolist()
 
-    input("Prepare to move panda. During capture press q to stop. Enter to start.")
+    all_images = []
+    all_joint_angles = []
+    all_timestamps = []
+    input("Prepare to move panda. During capture Ctrl+C to stop and save data. Enter to start.")
     # Main loop:
     rate = rospy.Rate(30) # 30hz
     while not rospy.is_shutdown():
-        k = cv2.waitKey(1) & 0xFF
-        if k == ord('q'):
-            rospy.signal_shutdown("Done collecting data.")
-        else:
+        try:
             if new_data:
                 # Copy all new data gotData
                 # new_points_2d = torch.clone(points_2d)
-                new_image = np.copy(image.detach().cpu().numpy())
+                new_image = image_pil
                 new_joint_angles = np.copy(joint_angles)
-                
-                # new_cTr = np.copy(cTr)
-                # new_image_msg = image_msg
+                new_timestamp = rospy.get_time()
 
+                all_images.append(new_image)
+                all_joint_angles.append(new_joint_angles)
+                all_timestamps.append(new_timestamp)
 
-                new_data = False
+            rate.sleep()
+        except KeyboardInterrupt:
+            rospy.signal_shutdown("Done collecting data.")
 
-        rate.sleep()
+    save_data(ep_info, ep_name, ep_path, all_images, all_joint_angles, all_timestamps)
+
