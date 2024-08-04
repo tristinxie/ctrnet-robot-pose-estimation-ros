@@ -13,6 +13,8 @@ RUN apt-get install -yq ros-noetic-rviz
 
 RUN mkdir /home/workspace
 
-COPY environment.yml environment.yml
-
+COPY requirements.txt requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+  && pip install --no-cache-dir -r requirements.txt
+RUN pip install "git+https://github.com/facebookresearch/pytorch3d.git@stable"
 WORKDIR /home/workspace
