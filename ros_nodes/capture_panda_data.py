@@ -124,7 +124,8 @@ def save_data(ep_info, ep_name, ep_path, images, joint_angles, timestamps):
     print("saving data...")
     for i, timestamp in enumerate(timestamps):
         curr_image = images[i]
-        image_file_name = f"{ep_name}_f{i}.png"
+        image_num = str(i).zfill(4)
+        image_file_name = f"{ep_name}_f{image_num}.png"
         image_path = os.path.join(ep_path, image_file_name)
         curr_image.save(image_path)
 
