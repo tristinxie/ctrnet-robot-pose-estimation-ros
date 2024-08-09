@@ -41,7 +41,6 @@ from ros_nodes.probability_funcs import *
 ################################################################
 import argparse
 ################################################################
-import imageio.v3 as iio
 from cotracker.utils.visualizer import Visualizer
 from cotracker.predictor import CoTrackerOnlinePredictor
 parser = argparse.ArgumentParser()
@@ -49,7 +48,7 @@ parser = argparse.ArgumentParser()
 args = parser.parse_args("")
 
 args.base_dir = "/home/workspace/src/ctrnet-robot-pose-estimation-ros/"
-args.use_gpu = False
+args.use_gpu = True
 args.trained_on_multi_gpus = True
 args.keypoint_seg_model_path = os.path.join(args.base_dir,"weights/panda/panda-3cam_azure/net.pth")
 args.urdf_file = os.path.join(args.base_dir,"urdfs/Panda/panda.urdf")
@@ -176,7 +175,7 @@ def visualize_panda(particles, joint_angles, cTr, image, points_2d, max_w_idx, p
         quit()
     # input("Type Enter to continue")
 
-def update_publisher(cTr, img_msg):
+def update_publisher(cTr, img_msg, quaternion=True):
     # p = geometry_msgs.msg.PoseStamped()
     # p.header = img_msg.header
     # p.pose.position.x = T[0]
@@ -189,8 +188,12 @@ def update_publisher(cTr, img_msg):
     #print(p)
     # pose_pub.publish(p)
     cvTr= np.eye(4)
-    cvTr[:3, :3] = kornia.geometry.conversions.quaternion_to_rotation_matrix(cTr[:, :4]).detach().cpu().numpy().squeeze()
-    cvTr[:3, 3] = np.array(cTr[:, 4:].detach().cpu())
+    if quaternion:
+        cvTr[:3, :3] = kornia.geometry.conversions.quaternion_to_rotation_matrix(cTr[:, :4]).detach().cpu().numpy().squeeze()
+        cvTr[:3, 3] = np.array(cTr[:, 4:].detach().cpu())
+    else:
+        cvTr[:3, :3] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:, :3]).detach().cpu().numpy().squeeze()
+        cvTr[:3, 3] = np.array(cTr[:, 3:].detach().cpu())
 
     # ROS camera to CV camera transform
     cTcv = np.array([[0, 0 , 1, 0], [-1, 0, 0 , 0], [0, -1, 0, 0], [0, 0, 0, 1]])
@@ -217,12 +220,23 @@ def _process_step(window_frames, is_first_step, grid_size, grid_query_frame):
         .float()
         .permute(0, 3, 1, 2)[None]
     )  # (1, T, 3, H, W)
-    print(video_chunk.shape)
     return model(
         video_chunk,
         is_first_step=is_first_step,
         grid_size=grid_size,
         grid_query_frame=grid_query_frame,
+    )
+
+def process_step_query(window_frames, is_first_step, query):
+    video_chunk = (
+        torch.tensor(np.stack(window_frames[-model.step * 2 :]), device=device)
+        .float()
+        .permute(0, 3, 1, 2)[None]
+    )  # (1, T, 3, H, W)
+    return model(
+        video_chunk,
+        is_first_step=is_first_step,
+        queries=query[None],
     )
 
 if __name__ == "__main__":
@@ -266,33 +280,34 @@ if __name__ == "__main__":
     # Main loop:
     rate = rospy.Rate(30) # 30hz
     prev_cTr = None
-    use_particle_filter = True
+    use_particle_filter = False
+    cotracker_query = None
     while not rospy.is_shutdown():
         try:
             if new_data:
                 # print("here")
                 # Copy all new data gotData
-                # new_points_2d = torch.copy(points_2d)
                 # new_image = torch.copy(image)
                 # new_joint_angles = np.copy(joint_angles)
+                new_points_2d = torch.clone(points_2d)
                 new_cTr = torch.clone(cTr)
                 new_joint_confidence = torch.clone(joint_confidence)
                 new_image_msg = image_msg
                 new_image = image
                 new_data = False
                 # CoTracker ##################################################################################
-                print(len(window_frames), is_first_step, visual_idx)
-                print(image.shape)
+                if cotracker_query is None:
+                    cotracker_query = torch.cat((torch.zeros((7,1)).to(device), new_points_2d.squeeze()), 1)
 
                 if visual_idx % model.step == 0 and visual_idx != 0:
-                    pred_tracks, pred_visibility = _process_step(
+                    pred_tracks, pred_visibility = process_step_query(
                         window_frames,
                         is_first_step,
-                        grid_size=args.grid_size,
-                        grid_query_frame=args.grid_query_frame,
+                        query=cotracker_query
                     )
                     is_first_step = False
-                window_frames.append(to_numpy_img(new_image))
+                frame = to_numpy_img(new_image)
+                window_frames.append(frame)
                 visual_idx += 1
 
                 # CoTracker ##################################################################################
@@ -301,7 +316,7 @@ if __name__ == "__main__":
                     print("PARTICLE FILTER TURNED OFF")
                     # pred_qua = kornia.geometry.conversions.angle_axis_to_quaternion(cTr[:,:3]).detach().cpu() # xyzw
                     pred_T = cTr[:,3:].detach().cpu()
-                    update_publisher(new_cTr, new_image_msg)
+                    update_publisher(new_cTr, new_image_msg, quaternion=False)
                     # update_publisher(new_cTr, new_image_msg, pred_qua.cpu().detach().numpy().squeeze(), pred_T.cpu().detach().numpy().squeeze())
                     continue
 
@@ -325,7 +340,7 @@ if __name__ == "__main__":
                 # Update Particle filter
                 cam = None
                 gamma = 0.15
-                pf.update(points_2d, CtRNet, joint_angles, cam, prev_cTr, gamma)
+                pf.update(new_points_2d, CtRNet, joint_angles, cam, prev_cTr, gamma)
 
                 mean_particle = pf.get_mean_particle()
                 mean_particle_r = torch.from_numpy(mean_particle[:4])
@@ -349,15 +364,22 @@ if __name__ == "__main__":
             rospy.signal_shutdown("here")
 
     print("HERE")
-    pred_tracks, pred_visibility = _process_step(
+    # pred_tracks, pred_visibility = _process_step(
+    #     window_frames[-(visual_idx % model.step) - model.step - 1 :],
+    #     is_first_step,
+    #     grid_size=args.grid_size,
+    #     grid_query_frame=args.grid_query_frame,
+    # )
+    pred_tracks, pred_visibility = process_step_query(
         window_frames[-(visual_idx % model.step) - model.step - 1 :],
         is_first_step,
-        grid_size=args.grid_size,
-        grid_query_frame=args.grid_query_frame,
+        query=cotracker_query
     )
     print("Tracks are computed")
     # save a video with predicted tracks
     seq_name = "panda"
-    video = torch.tensor(np.stack(window_frames), device=device).permute(0, 3, 1, 2)[None]
-    vis = Visualizer(save_dir="/home/workspace/ctrnet-robot-pose-estimation-ros/ros_nodes/visuals", pad_value=120, linewidth=3)
-    vis.visualize(video, pred_tracks, pred_visibility, query_frame=args.grid_query_frame, filename=seq_name)
+    video = torch.tensor(np.stack(window_frames), device=device).permute(0, 3, 1, 2)
+    video = (video*255)[None]
+    vis = Visualizer(save_dir="/home/workspace/src/ctrnet-robot-pose-estimation-ros/ros_nodes/visuals", tracks_leave_trace=-1)
+    vis.visualize(video=video, tracks=pred_tracks, visibility=pred_visibility, filename=seq_name)
+    # vis.visualize(video, pred_tracks, pred_visibility, query_frame=args.grid_query_frame, filename=seq_name)
