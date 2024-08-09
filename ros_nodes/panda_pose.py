@@ -40,12 +40,16 @@ from ros_nodes.particle_filter import *
 from ros_nodes.probability_funcs import *
 ################################################################
 import argparse
+################################################################
+import imageio.v3 as iio
+from cotracker.utils.visualizer import Visualizer
+from cotracker.predictor import CoTrackerOnlinePredictor
 parser = argparse.ArgumentParser()
 
 args = parser.parse_args("")
 
 args.base_dir = "/home/workspace/src/ctrnet-robot-pose-estimation-ros/"
-args.use_gpu = True
+args.use_gpu = False
 args.trained_on_multi_gpus = True
 args.keypoint_seg_model_path = os.path.join(args.base_dir,"weights/panda/panda-3cam_azure/net.pth")
 args.urdf_file = os.path.join(args.base_dir,"urdfs/Panda/panda.urdf")
@@ -69,6 +73,9 @@ if args.use_gpu:
 else:
     device = "cpu"
 
+args.checkpoint = "/home/co-tracker/checkpoints/cotracker2.pth"
+args.grid_size = 10
+args.grid_query_frame = 0
 trans_to_tensor = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -90,7 +97,6 @@ os.mkdir("/home/workspace/src/ctrnet-robot-pose-estimation-ros/ros_nodes/visuals
 
 #start = time.time()
 visual_idx = 0
-
 new_data = False
 points_2d = None
 image = None
@@ -98,6 +104,8 @@ joint_angles = None
 cTr = None
 joint_confidence = None
 image_msg = None
+window_frames = []
+is_first_step = True
 def gotData(img_msg, joint_msg):
     #global start
     global new_data, points_2d, image, joint_angles, cTr, joint_confidence, image_msg
@@ -203,9 +211,30 @@ def update_publisher(cTr, img_msg):
     t.transform.rotation.w = qua[0]
     br.sendTransform(t)
 
+def _process_step(window_frames, is_first_step, grid_size, grid_query_frame):
+    video_chunk = (
+        torch.tensor(np.stack(window_frames[-model.step * 2 :]), device=device)
+        .float()
+        .permute(0, 3, 1, 2)[None]
+    )  # (1, T, 3, H, W)
+    print(video_chunk.shape)
+    return model(
+        video_chunk,
+        is_first_step=is_first_step,
+        grid_size=grid_size,
+        grid_query_frame=grid_query_frame,
+    )
+
 if __name__ == "__main__":
     warnings.filterwarnings("ignore", message="`XYZW` quaternion coefficient order is deprecated and will be removed after > 0.6. Please use `QuaternionCoeffOrder.WXYZ` instead.")
+    # CoTracker
+    if args.checkpoint is not None:
+        model = CoTrackerOnlinePredictor(checkpoint=args.checkpoint)
+    else:
+        model = torch.hub.load("facebookresearch/co-tracker", "cotracker2_online")
+    model = model.to(device)
 
+    # Particle filter
     rospy.init_node('panda_pose')
     # Define your image topic
     image_topic = "/rgb/image_raw"
@@ -230,7 +259,7 @@ if __name__ == "__main__":
                         init_distribution=sample_gaussian,
                         motion_model=additive_gaussian,
                         obs_model=point_feature_obs,
-                        num_particles=2000)
+                        num_particles=2500)
     pf.init_filter(init_std)
     rospy.loginfo("Initailized particle filter")
 
@@ -239,61 +268,96 @@ if __name__ == "__main__":
     prev_cTr = None
     use_particle_filter = True
     while not rospy.is_shutdown():
-        if new_data:
-            # print("here")
-            # Copy all new data gotData
-            # new_points_2d = torch.copy(points_2d)
-            # new_image = torch.copy(image)
-            # new_joint_angles = np.copy(joint_angles)
-            new_cTr = torch.clone(cTr)
-            new_joint_confidence = torch.clone(joint_confidence)
-            new_image_msg = image_msg
-            new_data = False
+        try:
+            if new_data:
+                # print("here")
+                # Copy all new data gotData
+                # new_points_2d = torch.copy(points_2d)
+                # new_image = torch.copy(image)
+                # new_joint_angles = np.copy(joint_angles)
+                new_cTr = torch.clone(cTr)
+                new_joint_confidence = torch.clone(joint_confidence)
+                new_image_msg = image_msg
+                new_image = image
+                new_data = False
+                # CoTracker ##################################################################################
+                print(len(window_frames), is_first_step, visual_idx)
+                print(image.shape)
 
-            if use_particle_filter == False:
-                print("PARTICLE FILTER TURNED OFF")
-                # pred_qua = kornia.geometry.conversions.angle_axis_to_quaternion(cTr[:,:3]).detach().cpu() # xyzw
-                pred_T = cTr[:,3:].detach().cpu()
-                update_publisher(new_cTr, new_image_msg)
-                # update_publisher(new_cTr, new_image_msg, pred_qua.cpu().detach().numpy().squeeze(), pred_T.cpu().detach().numpy().squeeze())
-                continue
+                if visual_idx % model.step == 0 and visual_idx != 0:
+                    pred_tracks, pred_visibility = _process_step(
+                        window_frames,
+                        is_first_step,
+                        grid_size=args.grid_size,
+                        grid_query_frame=args.grid_query_frame,
+                    )
+                    is_first_step = False
+                window_frames.append(to_numpy_img(new_image))
+                visual_idx += 1
 
-            if prev_cTr is None:
-                prev_cTr = new_cTr
-                continue
+                # CoTracker ##################################################################################
 
-            # Skip if not CtRNet not confident in joints
-            # joint_confident_thresh = 0
-            # num_joint_confident = torch.sum(torch.gt(joint_confidence, 0.95))
-            # if num_joint_confident < joint_confident_thresh:
-            #     print(f"Only confident with {num_joint_confident} joints, skipping...")
-            #     continue
-            
-            # Predict Particle filter
-            pred_std = np.array([1.0e-4, 1.0e-4, 1.0e-4, 1.0e-4,
-                                2.5e-5, 2.5e-5, 2.5e-5])
+                if use_particle_filter == False:
+                    print("PARTICLE FILTER TURNED OFF")
+                    # pred_qua = kornia.geometry.conversions.angle_axis_to_quaternion(cTr[:,:3]).detach().cpu() # xyzw
+                    pred_T = cTr[:,3:].detach().cpu()
+                    update_publisher(new_cTr, new_image_msg)
+                    # update_publisher(new_cTr, new_image_msg, pred_qua.cpu().detach().numpy().squeeze(), pred_T.cpu().detach().numpy().squeeze())
+                    continue
 
-            pf.predict(pred_std)
+                if prev_cTr is None:
+                    prev_cTr = new_cTr
+                    continue
 
-            # Update Particle filter
-            cam = None
-            gamma = 0.15
-            pf.update(points_2d, CtRNet, joint_angles, cam, prev_cTr, gamma)
+                # Skip if not CtRNet not confident in joints
+                # joint_confident_thresh = 0
+                # num_joint_confident = torch.sum(torch.gt(joint_confidence, 0.95))
+                # if num_joint_confident < joint_confident_thresh:
+                #     print(f"Only confident with {num_joint_confident} joints, skipping...")
+                #     continue
+                
+                # Predict Particle filter
+                pred_std = np.array([1.0e-4, 1.0e-4, 1.0e-4, 1.0e-4,
+                                    2.5e-5, 2.5e-5, 2.5e-5])
 
-            mean_particle = pf.get_mean_particle()
-            mean_particle_r = torch.from_numpy(mean_particle[:4])
-            mean_particle_t = torch.from_numpy(mean_particle[4:])
+                pf.predict(pred_std)
 
-            prev_cTr_r = kornia.geometry.conversions.angle_axis_to_quaternion(prev_cTr[:, :3])
-            prev_cTr_t = prev_cTr[:, 3:]
+                # Update Particle filter
+                cam = None
+                gamma = 0.15
+                pf.update(points_2d, CtRNet, joint_angles, cam, prev_cTr, gamma)
 
-            pred_cTr = torch.zeros((1, 7))
-            pred_cTr[0, :4] = prev_cTr_r.cpu() + mean_particle_r
-            pred_cTr[0, 4:] = prev_cTr_t.cpu() + mean_particle_t
+                mean_particle = pf.get_mean_particle()
+                mean_particle_r = torch.from_numpy(mean_particle[:4])
+                mean_particle_t = torch.from_numpy(mean_particle[4:])
 
-            # pred_qua = kornia.geometry.conversions.angle_axis_to_quaternion(pred_cTr[:,:3]).detach().cpu() # xyzw
-            # pred_T = pred_cTr[:,3:].detach().cpu()
-            # update_publisher(pred_cTr, new_image_msg, pred_qua.cpu().detach().numpy().squeeze(), pred_T.cpu().detach().numpy().squeeze())
-            update_publisher(pred_cTr, new_image_msg)
+                prev_cTr_r = kornia.geometry.conversions.angle_axis_to_quaternion(prev_cTr[:, :3])
+                prev_cTr_t = prev_cTr[:, 3:]
 
-        rate.sleep()
+                pred_cTr = torch.zeros((1, 7))
+                pred_cTr[0, :4] = prev_cTr_r.cpu() + mean_particle_r
+                pred_cTr[0, 4:] = prev_cTr_t.cpu() + mean_particle_t
+                # good ctr: tensor([[ 0.3882,  0.7024, -0.5301,  0.2847,  0.1452,  0.3092,  1.0225]]
+                # print(pred_cTr)
+                # pred_qua = kornia.geometry.conversions.angle_axis_to_quaternion(pred_cTr[:,:3]).detach().cpu() # xyzw
+                # pred_T = pred_cTr[:,3:].detach().cpu()
+                # update_publisher(pred_cTr, new_image_msg, pred_qua.cpu().detach().numpy().squeeze(), pred_T.cpu().detach().numpy().squeeze())
+                update_publisher(pred_cTr, new_image_msg)
+            rate.sleep()
+        except KeyboardInterrupt:
+            # Processing the final video frames in case video length is not a multiple of model.step
+            rospy.signal_shutdown("here")
+
+    print("HERE")
+    pred_tracks, pred_visibility = _process_step(
+        window_frames[-(visual_idx % model.step) - model.step - 1 :],
+        is_first_step,
+        grid_size=args.grid_size,
+        grid_query_frame=args.grid_query_frame,
+    )
+    print("Tracks are computed")
+    # save a video with predicted tracks
+    seq_name = "panda"
+    video = torch.tensor(np.stack(window_frames), device=device).permute(0, 3, 1, 2)[None]
+    vis = Visualizer(save_dir="/home/workspace/ctrnet-robot-pose-estimation-ros/ros_nodes/visuals", pad_value=120, linewidth=3)
+    vis.visualize(video, pred_tracks, pred_visibility, query_frame=args.grid_query_frame, filename=seq_name)
