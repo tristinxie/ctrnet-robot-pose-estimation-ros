@@ -26,8 +26,8 @@ class ParticleFilter:
         self._particles = self._motion_model(self._particles, tiled_std)
 
 
-    def update(self, points_2d, ctrnet, joint_angles, cam, cTr, gamma):
-        obs_probs = self._obs_model(self._particles, points_2d, ctrnet, joint_angles, cam, cTr, gamma)
+    def update(self, points_2d, cotracker_points, ctrnet, joint_angles, cam, cTr, gamma):
+        obs_probs = self._obs_model(self._particles, points_2d, cotracker_points, ctrnet, joint_angles, cam, cTr, gamma)
         self._weights = self._weights*obs_probs[:, 0]
         self.norm_weights()
         # for p_idx, particle in enumerate(self._particles):
@@ -42,11 +42,12 @@ class ParticleFilter:
         # performance = np.sum(self._weights/num_particles)
         # print(performance)
         # print(np.max(self._weights))
-        self.inject_random_particles(100)
+        # self.inject_random_particles(25)
         if self._prev_joint_angles is not None:
             did_not_move = np.any(np.isclose(self._prev_joint_angles, joint_angles))
             if not did_not_move and (self._min_num_effective_particles > thresh or np.isnan(thresh)):
-                indices = filterpy.monte_carlo.residual_resample(self._weights)
+                print("Resampling")
+                indices = filterpy.monte_carlo.multinomial_resample(self._weights)
                 self._particles = self._particles[indices, :]
                 self._weights = np.ones((self._num_particles))/float(self._num_particles)
 
@@ -54,8 +55,8 @@ class ParticleFilter:
 
     def inject_random_particles(self, num_rep):
         std = np.array([
-                1.0e-2, 1.0e-2, 1.0e-2, 1.0e-2, # ori
-                1.0e-1, 1.0e-1, 1.0e-1, # pos
+                1.0e-2, 1.0e-2, 1.0e-1, 1.0e-2, # ori
+                1.0e-2, 1.0e-2, 1.0e-2, # pos
             ])
         rand_indices = np.random.randint(0, self._num_particles, size=num_rep)
         prob = np.sum(self._weights[rand_indices])

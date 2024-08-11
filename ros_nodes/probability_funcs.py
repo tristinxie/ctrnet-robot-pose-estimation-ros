@@ -49,7 +49,7 @@ def projectPoints(points, K):
     
     return projected_point
 # State is: [ori_x, ori_y, ori_z, pos_x, pos_y, pos_z]
-def point_feature_obs(states, points_2d, ctrnet, joint_angles, cam, cTr, gamma):
+def point_feature_obs(states, points_2d, cotracker_points, ctrnet, joint_angles, cam, cTr, gamma):
     #convert state to angle axis
     num_particles = states.shape[0]
     T = np.eye(4)
@@ -99,10 +99,16 @@ def point_feature_obs(states, points_2d, ctrnet, joint_angles, cam, cTr, gamma):
     projected_points = projected_points.reshape(num_particles, 14)
     detected_points =  points_2d.cpu().detach().numpy()
     detected_points = np.reshape(np.tile(detected_points, (num_particles, 1, 1)), (num_particles, 14))
+
     # print(projected_points, detected_points)
     # TODO Fix NaN problem
     if np.any(np.isnan(projected_points)) or np.any(np.isnan(detected_points)):
         print(projected_points)
         print(detected_points)
     prob = rbf_kernel(projected_points, Y=detected_points).squeeze()
+    # if cotracker_points is not None:
+    #     cotracker_detected_points = cotracker_points
+    #     cotracker_detected_points = np.reshape(np.tile(cotracker_detected_points, (num_particles, 1, 1)), (num_particles, 14))
+    #     cotracker_prob = rbf_kernel(projected_points, Y=cotracker_detected_points).squeeze()
+    #     return cotracker_prob
     return prob

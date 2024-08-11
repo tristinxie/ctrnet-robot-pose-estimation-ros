@@ -105,6 +105,7 @@ joint_confidence = None
 image_msg = None
 window_frames = []
 is_first_step = True
+ctrnet_points = []
 def gotData(img_msg, joint_msg):
     #global start
     global new_data, points_2d, image, joint_angles, cTr, joint_confidence, image_msg
@@ -273,7 +274,7 @@ if __name__ == "__main__":
                         init_distribution=sample_gaussian,
                         motion_model=additive_gaussian,
                         obs_model=point_feature_obs,
-                        num_particles=2500)
+                        num_particles=2000)
     pf.init_filter(init_std)
     rospy.loginfo("Initailized particle filter")
 
@@ -282,6 +283,8 @@ if __name__ == "__main__":
     prev_cTr = None
     use_particle_filter = False
     cotracker_query = None
+    visualize_cotracker = True
+    pred_tracks = None
     while not rospy.is_shutdown():
         try:
             if new_data:
@@ -295,22 +298,32 @@ if __name__ == "__main__":
                 new_image_msg = image_msg
                 new_image = image
                 new_data = False
-                # CoTracker ##################################################################################
+                ctrnet_points.append(new_points_2d.detach().cpu().numpy())
+                # CoTracker Start ##################################################################################
+                # Start CoTracker on high confidence points
                 if cotracker_query is None:
-                    cotracker_query = torch.cat((torch.zeros((7,1)).to(device), new_points_2d.squeeze()), 1)
+                    joint_confident_thresh = 7
+                    num_joint_confident = torch.sum(torch.gt(joint_confidence, 0.90))
+                    if num_joint_confident >= joint_confident_thresh:
+                        print("Created cotracker query")
+                        cotracker_query = torch.cat(((torch.ones((7,1))*visual_idx).to(device), new_points_2d.squeeze().to(device)), 1)
+                        print(len(window_frames))
+                        print(cotracker_query)
 
-                if visual_idx % model.step == 0 and visual_idx != 0:
+                if visual_idx % model.step == 0 and visual_idx != 0 and cotracker_query is not None:
                     pred_tracks, pred_visibility = process_step_query(
                         window_frames,
                         is_first_step,
                         query=cotracker_query
                     )
+                    if pred_tracks is not None:
+                        print(pred_tracks.shape)
                     is_first_step = False
                 frame = to_numpy_img(new_image)
                 window_frames.append(frame)
                 visual_idx += 1
 
-                # CoTracker ##################################################################################
+                # CoTracker End ##################################################################################
 
                 if use_particle_filter == False:
                     print("PARTICLE FILTER TURNED OFF")
@@ -324,13 +337,6 @@ if __name__ == "__main__":
                     prev_cTr = new_cTr
                     continue
 
-                # Skip if not CtRNet not confident in joints
-                # joint_confident_thresh = 0
-                # num_joint_confident = torch.sum(torch.gt(joint_confidence, 0.95))
-                # if num_joint_confident < joint_confident_thresh:
-                #     print(f"Only confident with {num_joint_confident} joints, skipping...")
-                #     continue
-                
                 # Predict Particle filter
                 pred_std = np.array([1.0e-4, 1.0e-4, 1.0e-4, 1.0e-4,
                                     2.5e-5, 2.5e-5, 2.5e-5])
@@ -340,7 +346,11 @@ if __name__ == "__main__":
                 # Update Particle filter
                 cam = None
                 gamma = 0.15
-                pf.update(new_points_2d, CtRNet, joint_angles, cam, prev_cTr, gamma)
+                if pred_tracks is not None:
+                    cotracker_points = pred_tracks[:, -1, :, :].detach().cpu().numpy()
+                else:
+                    cotracker_points = None
+                pf.update(new_points_2d, cotracker_points, CtRNet, joint_angles, cam, prev_cTr, gamma)
 
                 mean_particle = pf.get_mean_particle()
                 mean_particle_r = torch.from_numpy(mean_particle[:4])
@@ -353,33 +363,30 @@ if __name__ == "__main__":
                 pred_cTr[0, :4] = prev_cTr_r.cpu() + mean_particle_r
                 pred_cTr[0, 4:] = prev_cTr_t.cpu() + mean_particle_t
                 # good ctr: tensor([[ 0.3882,  0.7024, -0.5301,  0.2847,  0.1452,  0.3092,  1.0225]]
-                # print(pred_cTr)
+                print(pred_cTr)
                 # pred_qua = kornia.geometry.conversions.angle_axis_to_quaternion(pred_cTr[:,:3]).detach().cpu() # xyzw
                 # pred_T = pred_cTr[:,3:].detach().cpu()
                 # update_publisher(pred_cTr, new_image_msg, pred_qua.cpu().detach().numpy().squeeze(), pred_T.cpu().detach().numpy().squeeze())
                 update_publisher(pred_cTr, new_image_msg)
             rate.sleep()
         except KeyboardInterrupt:
-            # Processing the final video frames in case video length is not a multiple of model.step
             rospy.signal_shutdown("here")
-
-    print("HERE")
-    # pred_tracks, pred_visibility = _process_step(
-    #     window_frames[-(visual_idx % model.step) - model.step - 1 :],
-    #     is_first_step,
-    #     grid_size=args.grid_size,
-    #     grid_query_frame=args.grid_query_frame,
-    # )
-    pred_tracks, pred_visibility = process_step_query(
-        window_frames[-(visual_idx % model.step) - model.step - 1 :],
-        is_first_step,
-        query=cotracker_query
-    )
-    print("Tracks are computed")
-    # save a video with predicted tracks
-    seq_name = "panda"
-    video = torch.tensor(np.stack(window_frames), device=device).permute(0, 3, 1, 2)
-    video = (video*255)[None]
-    vis = Visualizer(save_dir="/home/workspace/src/ctrnet-robot-pose-estimation-ros/ros_nodes/visuals", tracks_leave_trace=-1)
-    vis.visualize(video=video, tracks=pred_tracks, visibility=pred_visibility, filename=seq_name)
-    # vis.visualize(video, pred_tracks, pred_visibility, query_frame=args.grid_query_frame, filename=seq_name)
+    if visualize_cotracker:
+        # Processing the final video frames in case video length is not a multiple of model.step
+        pred_tracks, pred_visibility = process_step_query(
+            window_frames[-(visual_idx % model.step) - model.step - 1 :],
+            is_first_step,
+            query=cotracker_query
+        )
+        print("Tracks are computed")
+        # save a video with predicted tracks
+        seq_name = "occlusion_panda"
+        video = torch.tensor(np.stack(window_frames), device=device).permute(0, 3, 1, 2)
+        video = (video*255)[None]
+        vis = Visualizer(save_dir="/home/workspace/src/ctrnet-robot-pose-estimation-ros/ros_nodes/visuals", linewidth=1, tracks_leave_trace=-1)
+        ctrnet_points = torch.tensor(np.stack(ctrnet_points), device=device).permute(1, 0, 2, 3)
+        print(pred_tracks.shape)
+        print(ctrnet_points.shape)
+        vis.visualize(video=video, tracks=pred_tracks, visibility=pred_visibility, filename=f"cotracker_{seq_name}")
+        vis.visualize(video=video, tracks=ctrnet_points, filename=f"ctrnet_{seq_name}")
+        # vis.visualize(video, pred_tracks, pred_visibility, query_frame=args.grid_query_frame, filename=seq_name)
