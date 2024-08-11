@@ -90,8 +90,6 @@ def preprocess_img(cv_img,args):
     image = trans_to_tensor(image_pil)
     return image
 
-shutil.rmtree("/home/workspace/src/ctrnet-robot-pose-estimation-ros/ros_nodes/visuals")
-os.mkdir("/home/workspace/src/ctrnet-robot-pose-estimation-ros/ros_nodes/visuals")
 #############################################################################3
 
 #start = time.time()
@@ -106,11 +104,12 @@ image_msg = None
 window_frames = []
 is_first_step = True
 ctrnet_points = []
+cotracker_query = None
+pred_tracks = None
+use_cotracker_for_ctrnet = True
 def gotData(img_msg, joint_msg):
-    #global start
-    global new_data, points_2d, image, joint_angles, cTr, joint_confidence, image_msg
+    global new_data, points_2d, image, joint_angles, cTr, joint_confidence, image_msg, window_frames, is_first_step, cotracker_query, window_frames, visual_idx, pred_tracks
     image_msg = img_msg
-    # print("Received data!")
     try:
         # Convert your ROS Image message to OpenCV2
         cv2_img = bridge.imgmsg_to_cv2(img_msg, "bgr8")
@@ -122,72 +121,41 @@ def gotData(img_msg, joint_msg):
         if args.use_gpu:
             image = image.cuda()
 
-        cTr, points_2d, segmentation, joint_confidence = CtRNet.inference_single_image(image, joint_angles)
+        # CoTracker Start ##################################################################################
+        # Start CoTracker on high confidence points
 
+        if visual_idx % model.step == 0 and visual_idx != 0 and cotracker_query is not None:
+            pred_tracks, pred_visibility = process_step_query(
+                window_frames,
+                is_first_step,
+                query=cotracker_query
+            )
+            is_first_step = False
+        frame = to_numpy_img(image)
+        window_frames.append(frame)
+        visual_idx += 1
+
+        if pred_tracks is not None and use_cotracker_for_ctrnet:
+            cotracker_points = pred_tracks[:, -1, :, :]
+        else:
+            cotracker_points = None
+        # CoTracker End ##################################################################################
+        cTr, points_2d, segmentation, joint_confidence = CtRNet.inference_single_image(image, joint_angles, cotracker_points)
         
-        #### visualization code ####
-        #points_2d = points_2d.detach().cpu().numpy()
-        #img_np = to_numpy_img(image)
-        #img_np = overwrite_image(img_np,points_2d[0].astype(int), color=(1,0,0))
-        #plt.imsave("test.png",img_np)
-        ####
+        if cotracker_query is None:
+            joint_confident_thresh = 7
+            num_joint_confident = torch.sum(torch.gt(joint_confidence, 0.90))
+            if num_joint_confident >= joint_confident_thresh:
+                print("Created cotracker query")
+                cotracker_query = torch.cat(((torch.ones((7,1))*visual_idx).to(device), points_2d.squeeze().to(device)), 1)
+                print(len(window_frames))
+                print(cotracker_query)
+    
     except CvBridgeError as e:
         print(e)
     new_data = True
-def visualize_panda(particles, joint_angles, cTr, image, points_2d, max_w_idx, points_2d_minus_one):
-    global visual_idx
-    base_dir = "/home/workspace/src/ctrnet-robot-pose-estimation-ros"
-    mesh_files = [base_dir + "/urdfs/Panda/meshes/visual/link0/link0.obj",
-              base_dir + "/urdfs/Panda/meshes/visual/link1/link1.obj",
-              base_dir + "/urdfs/Panda/meshes/visual/link2/link2.obj",
-              base_dir + "/urdfs/Panda/meshes/visual/link3/link3.obj",
-              base_dir + "/urdfs/Panda/meshes/visual/link4/link4.obj",
-              base_dir + "/urdfs/Panda/meshes/visual/link5/link5.obj",
-              base_dir + "/urdfs/Panda/meshes/visual/link6/link6.obj",
-              base_dir + "/urdfs/Panda/meshes/visual/link7/link7.obj",
-              base_dir + "/urdfs/Panda/meshes/visual/hand/hand.obj",
-             ]
-    robot_renderer = CtRNet.setup_robot_renderer(mesh_files)
-    robot_mesh = robot_renderer.get_robot_mesh(joint_angles)
-    # rendered_image = CtRNet.render_single_robot_mask(cTr.squeeze().detach().cuda(), robot_mesh, robot_renderer)
-    img_np = to_numpy_img(image)
-    img_np = 0.0* np.ones(img_np.shape) + img_np * 0.6
-    red = (1,0,0)
-    green = (0,1,0)
-    blue = (0,0,1)
-    yellow = (1,1,0)
-    img_np = overwrite_image(img_np, particles.reshape(-1, particles.shape[-1]), color=blue, point_size=1)
-    img_np = overwrite_image(img_np, particles[max_w_idx, :, :], color=red, point_size=1)
-    img_np = overwrite_image(img_np, points_2d.detach().cpu().numpy().squeeze().astype(int), color=green, point_size=3)
-    img_np = overwrite_image(img_np, points_2d_minus_one.detach().cpu().numpy().squeeze().astype(int), color=yellow, point_size=3)
-
-    plt.figure(figsize=(15,5))
-    plt.title("keypoints")
-    plt.imshow(img_np)
-    colors = [blue, red, green, yellow]
-    labels = ["Projected particles", "Max particle", "Current point2d", "Previous point2d"]
-    patches = [ mpatches.Patch(color=colors[i], label=labels[i]) for i in range(len(colors))]
-    # put those patched as legend-handles into the legend
-    plt.legend(handles=patches, bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0. )
-    plt.grid(True)
-    plt.savefig(f"/home/workspace/src/ctrnet-robot-pose-estimation-ros/ros_nodes/visuals/result{visual_idx}.png", dpi=800, format="png")
-    visual_idx += 1
-    if visual_idx == 100:
-        quit()
-    # input("Type Enter to continue")
 
 def update_publisher(cTr, img_msg, quaternion=True):
-    # p = geometry_msgs.msg.PoseStamped()
-    # p.header = img_msg.header
-    # p.pose.position.x = T[0]
-    # p.pose.position.y = T[1]
-    # p.pose.position.z = T[2]
-    # p.pose.orientation.x = qua[0]
-    # p.pose.orientation.y = qua[1]
-    # p.pose.orientation.z = qua[2]
-    # p.pose.orientation.w = qua[3]
-    #print(p)
-    # pose_pub.publish(p)
     cvTr= np.eye(4)
     if quaternion:
         cvTr[:3, :3] = kornia.geometry.conversions.quaternion_to_rotation_matrix(cTr[:, :4]).detach().cpu().numpy().squeeze()
@@ -214,19 +182,6 @@ def update_publisher(cTr, img_msg, quaternion=True):
     t.transform.rotation.z = qua[3]
     t.transform.rotation.w = qua[0]
     br.sendTransform(t)
-
-def _process_step(window_frames, is_first_step, grid_size, grid_query_frame):
-    video_chunk = (
-        torch.tensor(np.stack(window_frames[-model.step * 2 :]), device=device)
-        .float()
-        .permute(0, 3, 1, 2)[None]
-    )  # (1, T, 3, H, W)
-    return model(
-        video_chunk,
-        is_first_step=is_first_step,
-        grid_size=grid_size,
-        grid_query_frame=grid_query_frame,
-    )
 
 def process_step_query(window_frames, is_first_step, query):
     video_chunk = (
@@ -282,9 +237,7 @@ if __name__ == "__main__":
     rate = rospy.Rate(30) # 30hz
     prev_cTr = None
     use_particle_filter = False
-    cotracker_query = None
-    visualize_cotracker = True
-    pred_tracks = None
+    visualize_cotracker = False
     while not rospy.is_shutdown():
         try:
             if new_data:
@@ -299,31 +252,6 @@ if __name__ == "__main__":
                 new_image = image
                 new_data = False
                 ctrnet_points.append(new_points_2d.detach().cpu().numpy())
-                # CoTracker Start ##################################################################################
-                # Start CoTracker on high confidence points
-                if cotracker_query is None:
-                    joint_confident_thresh = 7
-                    num_joint_confident = torch.sum(torch.gt(joint_confidence, 0.90))
-                    if num_joint_confident >= joint_confident_thresh:
-                        print("Created cotracker query")
-                        cotracker_query = torch.cat(((torch.ones((7,1))*visual_idx).to(device), new_points_2d.squeeze().to(device)), 1)
-                        print(len(window_frames))
-                        print(cotracker_query)
-
-                if visual_idx % model.step == 0 and visual_idx != 0 and cotracker_query is not None:
-                    pred_tracks, pred_visibility = process_step_query(
-                        window_frames,
-                        is_first_step,
-                        query=cotracker_query
-                    )
-                    if pred_tracks is not None:
-                        print(pred_tracks.shape)
-                    is_first_step = False
-                frame = to_numpy_img(new_image)
-                window_frames.append(frame)
-                visual_idx += 1
-
-                # CoTracker End ##################################################################################
 
                 if use_particle_filter == False:
                     print("PARTICLE FILTER TURNED OFF")
@@ -346,10 +274,6 @@ if __name__ == "__main__":
                 # Update Particle filter
                 cam = None
                 gamma = 0.15
-                if pred_tracks is not None:
-                    cotracker_points = pred_tracks[:, -1, :, :].detach().cpu().numpy()
-                else:
-                    cotracker_points = None
                 pf.update(new_points_2d, cotracker_points, CtRNet, joint_angles, cam, prev_cTr, gamma)
 
                 mean_particle = pf.get_mean_particle()

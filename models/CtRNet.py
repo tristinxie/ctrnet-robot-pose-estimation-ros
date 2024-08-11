@@ -58,7 +58,7 @@ class CtRNet(torch.nn.Module):
         print("Robot model: {}".format(args.robot_name))
 
 
-    def inference_single_image(self, img, joint_angles):
+    def inference_single_image(self, img, joint_angles, cotracker_points):
         # img: (3, H, W)
         # joint_angles: (7)
         # robot: robot model
@@ -73,7 +73,13 @@ class CtRNet(torch.nn.Module):
 
         #init_pose = torch.tensor([[  1.5497,  0.5420, -0.3909, -0.4698, -0.0211,  1.3243]])
         #cTr = bpnp(points_2d_pred, points_3d, K, init_pose)
-        cTr = self.bpnp(points_2d, points_3d, self.K)
+        joint_confident_thresh = 7
+        num_joint_confident = torch.sum(torch.gt(confidence, 0.95))
+        if num_joint_confident >= joint_confident_thresh or cotracker_points is None:
+            cTr = self.bpnp(points_2d, points_3d, self.K)
+        else:
+            print("using cotracker")
+            cTr = self.bpnp(cotracker_points, points_3d, self.K)
 
         return cTr, points_2d, foreground_mask, confidence
     
