@@ -279,8 +279,9 @@ if __name__ == "__main__":
     # Main loop:
     rate = rospy.Rate(30) # 30hz
     prev_cTr = None
-    use_particle_filter = False
+    use_particle_filter = True
     cotracker_query = None
+    visualize_cotracker = False
     while not rospy.is_shutdown():
         try:
             if new_data:
@@ -360,50 +361,24 @@ if __name__ == "__main__":
             rate.sleep()
         except KeyboardInterrupt:
             # Processing the final video frames in case video length is not a multiple of model.step
-            rospy.signal_shutdown("here")
-
-    print("HERE")
-    # pred_tracks, pred_visibility = _process_step(
-    #     window_frames[-(visual_idx % model.step) - model.step - 1 :],
-    #     is_first_step,
-    #     grid_size=args.grid_size,
-    #     grid_query_frame=args.grid_query_frame,
-    # )
-    pred_tracks, pred_visibility = process_step_query(
-        window_frames[-(visual_idx % model.step) - model.step - 1 :],
-        is_first_step,
-        query=cotracker_query
-    )
-    print("Tracks are computed")
-    # save a video with predicted tracks
-    seq_name = "panda"
-    video = torch.tensor(np.stack(window_frames), device=device).permute(0, 3, 1, 2)
-    video = (video*255)[None]
-    vis = Visualizer(save_dir="/home/workspace/src/ctrnet-robot-pose-estimation-ros/ros_nodes/visuals", tracks_leave_trace=-1)
-    vis.visualize(video=video, tracks=pred_tracks, visibility=pred_visibility, filename=seq_name)
-    # vis.visualize(video, pred_tracks, pred_visibility, query_frame=args.grid_query_frame, filename=seq_name)
-=======
-rospy.init_node('panda_pose')
-# Define your image topic
-image_topic = "/rgb/image_raw"
-robot_joint_topic = "/joint_states"
-robot_pose_topic = "robot_pose"
-# Set up your subscriber and define its callback
-#rospy.Subscriber(image_topic, sensor_msgs.msg.Image, gotData)
-
-image_sub = Subscriber(image_topic, sensor_msgs.msg.Image)
-robot_j_sub = Subscriber(robot_joint_topic, sensor_msgs.msg.JointState)
-pose_pub = rospy.Publisher(robot_pose_topic, geometry_msgs.msg.PoseStamped, queue_size=1)
-
-ats = ApproximateTimeSynchronizer([image_sub, robot_j_sub], queue_size=10, slop=5)
-ats.registerCallback(gotData)
-
-
-# Main loop:
-rate = rospy.Rate(30) # 30hz
-
-while not rospy.is_shutdown():
-    try:
-        rate.sleep()
-    except rospy.exceptions.ROSTimeMovedBackwardsException as e:
-        continue
+            rospy.signal_shutdown("Done.")
+    if visualize_cotracker:
+        # pred_tracks, pred_visibility = _process_step(
+        #     window_frames[-(visual_idx % model.step) - model.step - 1 :],
+        #     is_first_step,
+        #     grid_size=args.grid_size,
+        #     grid_query_frame=args.grid_query_frame,
+        # )
+        pred_tracks, pred_visibility = process_step_query(
+            window_frames[-(visual_idx % model.step) - model.step - 1 :],
+            is_first_step,
+            query=cotracker_query
+        )
+        print("Tracks are computed")
+        # save a video with predicted tracks
+        seq_name = "panda"
+        video = torch.tensor(np.stack(window_frames), device=device).permute(0, 3, 1, 2)
+        video = (video*255)[None]
+        vis = Visualizer(save_dir="/home/workspace/src/ctrnet-robot-pose-estimation-ros/ros_nodes/visuals", tracks_leave_trace=-1)
+        vis.visualize(video=video, tracks=pred_tracks, visibility=pred_visibility, filename=seq_name)
+        # vis.visualize(video, pred_tracks, pred_visibility, query_frame=args.grid_query_frame, filename=seq_name)

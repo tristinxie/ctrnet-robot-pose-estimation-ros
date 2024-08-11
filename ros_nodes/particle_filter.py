@@ -42,7 +42,7 @@ class ParticleFilter:
         # performance = np.sum(self._weights/num_particles)
         # print(performance)
         # print(np.max(self._weights))
-        self.inject_random_particles(100)
+        # self.inject_random_particles(100)
         if self._prev_joint_angles is not None:
             did_not_move = np.any(np.isclose(self._prev_joint_angles, joint_angles))
             if not did_not_move and (self._min_num_effective_particles > thresh or np.isnan(thresh)):
