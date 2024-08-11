@@ -122,7 +122,6 @@ def gotData(img_msg, joint_msg):
             image = image.cuda()
 
         cTr, points_2d, segmentation, joint_confidence = CtRNet.inference_single_image(image, joint_angles)
-
         
         #### visualization code ####
         #points_2d = points_2d.detach().cpu().numpy()
@@ -383,3 +382,28 @@ if __name__ == "__main__":
     vis = Visualizer(save_dir="/home/workspace/src/ctrnet-robot-pose-estimation-ros/ros_nodes/visuals", tracks_leave_trace=-1)
     vis.visualize(video=video, tracks=pred_tracks, visibility=pred_visibility, filename=seq_name)
     # vis.visualize(video, pred_tracks, pred_visibility, query_frame=args.grid_query_frame, filename=seq_name)
+=======
+rospy.init_node('panda_pose')
+# Define your image topic
+image_topic = "/rgb/image_raw"
+robot_joint_topic = "/joint_states"
+robot_pose_topic = "robot_pose"
+# Set up your subscriber and define its callback
+#rospy.Subscriber(image_topic, sensor_msgs.msg.Image, gotData)
+
+image_sub = Subscriber(image_topic, sensor_msgs.msg.Image)
+robot_j_sub = Subscriber(robot_joint_topic, sensor_msgs.msg.JointState)
+pose_pub = rospy.Publisher(robot_pose_topic, geometry_msgs.msg.PoseStamped, queue_size=1)
+
+ats = ApproximateTimeSynchronizer([image_sub, robot_j_sub], queue_size=10, slop=5)
+ats.registerCallback(gotData)
+
+
+# Main loop:
+rate = rospy.Rate(30) # 30hz
+
+while not rospy.is_shutdown():
+    try:
+        rate.sleep()
+    except rospy.exceptions.ROSTimeMovedBackwardsException as e:
+        continue
