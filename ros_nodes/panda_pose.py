@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import os
+import warnings
 base_dir = os.path.abspath(".")
 sys.path.append(base_dir)
 
@@ -35,9 +36,13 @@ from filterpy.monte_carlo import stratified_resample
 import matplotlib.patches as mpatches
 #os.environ['ROS_MASTER_URI']='http://192.168.1.116:11311'
 #os.environ['ROS_IP']='192.168.1.186'
-
+from ros_nodes.particle_filter import *
+from ros_nodes.probability_funcs import *
 ################################################################
 import argparse
+################################################################
+from cotracker.utils.visualizer import Visualizer
+from cotracker.predictor import CoTrackerOnlinePredictor
 parser = argparse.ArgumentParser()
 
 args = parser.parse_args("")
@@ -52,7 +57,8 @@ args.n_kp = 7
 args.scale = 0.15625
 args.height = 1536
 args.width = 2048
-args.fx, args.fy, args.px, args.py = 960.41357421875, 960.22314453125, 1021.7171020507812, 776.2381591796875
+args.fx, args.fy, args.px, args.py = 967.2597045898438, 967.2623291015625, 1024.62451171875, 772.18994140625
+# args.fx, args.fy, args.px, args.py = 960.41357421875, 960.22314453125, 1021.7171020507812, 776.2381591796875
 # scale the camera parameters
 args.width = int(args.width * args.scale)
 args.height = int(args.height * args.scale)
@@ -66,6 +72,9 @@ if args.use_gpu:
 else:
     device = "cpu"
 
+args.checkpoint = "/home/co-tracker/checkpoints/cotracker2.pth"
+args.grid_size = 10
+args.grid_query_frame = 0
 trans_to_tensor = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -86,19 +95,20 @@ os.mkdir("/home/workspace/src/ctrnet-robot-pose-estimation-ros/ros_nodes/visuals
 #############################################################################3
 
 #start = time.time()
-point_samples = []
-rotation_samples = []
-prev_confidence = []
-cTr_minus_one = None
 visual_idx = 0
+new_data = False
+points_2d = None
+image = None
+joint_angles = None
+cTr = None
+joint_confidence = None
+image_msg = None
+window_frames = []
+is_first_step = True
 def gotData(img_msg, joint_msg):
     #global start
-    global point_samples
-    global rotation_samples
-    global prev_confidence
-    global cTr_minus_one
-    global points_2d_minus_one
-    
+    global new_data, points_2d, image, joint_angles, cTr, joint_confidence, image_msg
+    image_msg = img_msg
     # print("Received data!")
     try:
         # Convert your ROS Image message to OpenCV2
@@ -111,87 +121,17 @@ def gotData(img_msg, joint_msg):
         if args.use_gpu:
             image = image.cuda()
 
-        cTr, points_2d, segmentation, confidence = CtRNet.inference_single_image(image, joint_angles)
-        # print(cTr)
-        # update_publisher(cTr, img_msg)
-        qua = kornia.geometry.conversions.angle_axis_to_quaternion(cTr[:,:3]).detach().cpu() # xyzw
-        T = cTr[:,3:].detach().cpu()
-        # filtering_method = "none"
-        # filtering_method = "z_score"
-        # filtering_method = "mod_z_score"
-        filtering_method = "particle"
-        joint_confident_thresh = 7
-        num_joint_confident = torch.sum(torch.gt(confidence, 0.90))
-        if num_joint_confident < joint_confident_thresh:
-            print(f"Only confident with {num_joint_confident} joints, skipping...")
-            return
-        if filtering_method == "none":
-            # input("Press Enter to continue")
-            update_publisher(cTr, img_msg, qua.numpy().squeeze(), T.numpy().squeeze())
-            return
-        elif filtering_method == "particle":
-            if cTr_minus_one is not None:
-                pred_cTr = particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, 0.005, 2000, 1, image)
-                cTr_minus_one = pred_cTr
-                points_2d_minus_one = points_2d
-                pred_qua = kornia.geometry.conversions.angle_axis_to_quaternion(pred_cTr[:,:3]).detach().cpu() # xyzw
-                pred_T = pred_cTr[:,3:].detach().cpu()
-                update_publisher(pred_cTr, img_msg, pred_qua.numpy().squeeze(), pred_T.numpy().squeeze())
-            else:
-                print(f"Skipping because t-1 is {cTr_minus_one}")
-                cTr_minus_one = cTr
-                points_2d_minus_one = points_2d
-            return
-        # avg_confidence = torch.mean(confidence)
-        # print(avg_confidence)
-        if len(point_samples) < 30:
-            print(f"Number of samples: {len(point_samples)}")
-            point_samples.append(T)
-            rotation_samples.append(qua)
-            prev_confidence = confidence
-            return
+        cTr, points_2d, segmentation, joint_confidence = CtRNet.inference_single_image(image, joint_angles)
         
-        # confidence_diff = prev_confidence - confidence
-        # print(confidence_diff)
-
-        is_not_outlier = None
-        thresh = 1.5
-        if filtering_method == "z_score":
-            is_not_outlier, max_pos_z, max_rot_z = z_score(T, qua, thresh)
-        elif filtering_method == "mod_z_score":
-            is_not_outlier, max_pos_z, max_rot_z = mod_z_score(T, qua, thresh)
-        else:
-            print("Invalid filtering method")
-
-        keep_outlier_prob = torch.min(torch.tensor(1), torch.sqrt(torch.max(max_pos_z, max_rot_z) - 1) / 3)
-        keep_outlier = random.random() < keep_outlier_prob
-        if is_not_outlier:
-            print("Kept cTr")
-            point_samples.pop(0)
-            rotation_samples.pop(0)
-            point_samples.append(T)
-            rotation_samples.append(qua)
-            update_publisher(cTr, img_msg, qua.numpy().squeeze(), T.numpy().squeeze())
-        elif keep_outlier:
-            print("Skipped but kept outlier")
-            # print(keep_outlier_prob)
-            point_samples.pop(0)
-            rotation_samples.pop(0)
-            point_samples.append(T)
-            rotation_samples.append(qua)
-        else:
-            print("Skipped cTr")
-
         #### visualization code ####
         #points_2d = points_2d.detach().cpu().numpy()
         #img_np = to_numpy_img(image)
         #img_np = overwrite_image(img_np,points_2d[0].astype(int), color=(1,0,0))
         #plt.imsave("test.png",img_np)
         ####
-
-
     except CvBridgeError as e:
         print(e)
+    new_data = True
 def visualize_panda(particles, joint_angles, cTr, image, points_2d, max_w_idx, points_2d_minus_one):
     global visual_idx
     base_dir = "/home/workspace/src/ctrnet-robot-pose-estimation-ros"
@@ -207,7 +147,7 @@ def visualize_panda(particles, joint_angles, cTr, image, points_2d, max_w_idx, p
              ]
     robot_renderer = CtRNet.setup_robot_renderer(mesh_files)
     robot_mesh = robot_renderer.get_robot_mesh(joint_angles)
-    rendered_image = CtRNet.render_single_robot_mask(cTr.squeeze().detach().cuda(), robot_mesh, robot_renderer)
+    # rendered_image = CtRNet.render_single_robot_mask(cTr.squeeze().detach().cuda(), robot_mesh, robot_renderer)
     img_np = to_numpy_img(image)
     img_np = 0.0* np.ones(img_np.shape) + img_np * 0.6
     red = (1,0,0)
@@ -220,15 +160,8 @@ def visualize_panda(particles, joint_angles, cTr, image, points_2d, max_w_idx, p
     img_np = overwrite_image(img_np, points_2d_minus_one.detach().cpu().numpy().squeeze().astype(int), color=yellow, point_size=3)
 
     plt.figure(figsize=(15,5))
-    # plt.subplot(1,3,1)
     plt.title("keypoints")
     plt.imshow(img_np)
-    # plt.subplot(1,3,2)
-    # plt.title("segmentation")
-    # plt.imshow(segmentation.squeeze().detach().cpu().numpy())
-    # plt.subplot(1,3,2)
-    # plt.title("rendering")
-    # plt.imshow(rendered_image.squeeze().detach().cpu().numpy())
     colors = [blue, red, green, yellow]
     labels = ["Projected particles", "Max particle", "Current point2d", "Previous point2d"]
     patches = [ mpatches.Patch(color=colors[i], label=labels[i]) for i in range(len(colors))]
@@ -240,147 +173,26 @@ def visualize_panda(particles, joint_angles, cTr, image, points_2d, max_w_idx, p
     if visual_idx == 100:
         quit()
     # input("Type Enter to continue")
-# refactor to class
-# init, pred, update, resampling (stretch)
-def particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, sigma, m, steps, image):
-    # print("--------------------------------------")
-    print("Particle filter")
-    particles_r = None
-    particles_t = None
-    pred_cTr = torch.zeros((1, 6))
-    for i in range(steps):
-        normal = torch.distributions.normal.Normal(torch.tensor([0.0]), torch.tensor([sigma]))
-        omega_r = normal.sample((m, 1, 4)).squeeze(3)
-        omega_t = normal.sample((m, 3)).squeeze()
 
-        # Step 1
-        if particles_r is None:
-            rvec_minus_one = kornia.geometry.conversions.angle_axis_to_quaternion(cTr_minus_one[:, :3]).detach().cpu()
-            tvec_minus_one = cTr_minus_one[:,3:].detach().cpu()
-
-            # m x 3 tensor of particles
-            particles_r = rvec_minus_one.repeat(m,1,1)
-            particles_t = tvec_minus_one.repeat(m,1)
-
-        particles_r += omega_r
-        particles_t += omega_t
-
-        particles_r = kornia.geometry.conversions.quaternion_to_angle_axis(particles_r)
-        # Step 2
-        _, t_list = CtRNet.robot.get_joint_RT(joint_angles)
-        points_3d = torch.from_numpy(np.array(t_list)).float()
-        p_t = points_3d[[0,2,3,4,6,7,8]] # remove 1 and 5 links as they are overlapping with 2 and 6
-        K = torch.from_numpy(CtRNet.intrinsics)
-        z_t_hats = []
-
-        # p = Pool(processes=3)
-        # args = zip(p_t.repeat(m,1,1).numpy(), np.float64(particles_r.cpu().detach().numpy()), np.float64(particles_t.cpu().detach().numpy()), K.repeat(m,1,1).numpy(), repeat(None))
-        # results = p.starmap(cv2.projectPoints, args)
-        # p.close()
-        # p.join()
-        # print(results)
-         #z_t_hats = [z_t_hat for (z_t_hat, _) in results]
-        # z_t_hats = list(list(zip(*results))[0]) 
-        for j in range(m): 
-            # convert quaternion to angle axis or rotation
-            z_t_hat, _ = cv2.projectPoints(p_t.numpy(), np.float64(particles_r[j, :, :].cpu().detach().numpy()), np.float64(particles_t[j, :].cpu().detach().numpy()), K.numpy(), None)
-            z_t_hats.append(z_t_hat)
-
-        # Step 3
-        z_t = points_2d.reshape(1, 14)
-        z_t_hats_points = np.array(z_t_hats).squeeze(2)
-        z_t_hats = z_t_hats_points.reshape(m, -1)
-        w = rbf_kernel(z_t_hats, Y=z_t.cpu().detach().numpy()) #avoid zeros
-        
-        # resampling
-        # w_norm = w.squeeze() / np.sum(w.squeeze())
-        # resample_idxs = systematic_resample(w_norm)
-        # resample_idxs = stratified_resample(w_norm)
-        # particles_r[:] = particles_r[resample_idxs]
-        # particles_t[:] = particles_t[resample_idxs]
-
-        # if i == steps-1:
-            # weighted normalized ctr
-            # cvTr = torch.eye(4).repeat(m, 1, 1)
-            # cvTr[:, :3, :3] = particles_r
-            # cvTr[:, :3, 3] = particles_t
-            # w_cvTr = w[:, :, None] * cvTr.detach().numpy()
-            # sum_w_cvTr = torch.sum(torch.from_numpy(w_cvTr), 0)
-            # sum_w = torch.sum(torch.from_numpy(w))
-            # norm_sum_cvTr = sum_w_cvTr / sum_w
-            # rvec = norm_sum_cvTr[:3, :3].contiguous()
-            # tvec = norm_sum_cvTr[:3, 3]
-            # pred_cTr = torch.zeros((1,6))
-            # pred_cTr[0, :3] = kornia.geometry.conversions.rotation_matrix_to_angle_axis(rvec)
-            # pred_cTr[0, 3:] = tvec
-
-            # max weighted ctr
-        max_w_idx = np.argmax(w)
-        pred_cTr = torch.zeros((1, 6))
-            # print(particles_r[max_w_idx, : ,:])
-        pred_cTr[0, :3] = particles_r[max_w_idx, :, :]
-        pred_cTr[0, 3:] = particles_t[max_w_idx, :]
-            
-    # visualize_panda(z_t_hats_points, joint_angles, cTr_minus_one, image, points_2d, max_w_idx, points_2d_minus_one)
-
-    return pred_cTr.detach()
-
-def z_score(T, qua, thresh):
-    point_mean = torch.mean(torch.stack(point_samples), dim=0)
-    point_std = torch.std(torch.stack(point_samples), dim=0)
-    rotation_mean = torch.mean(torch.stack(rotation_samples), dim=0)
-    rotation_std = torch.std(torch.stack(rotation_samples), dim=0)
-    point_z_score  = (T - point_mean) / point_std
-    rotation_z_score  = (qua - rotation_mean) / rotation_std
-
-    test_keep_stable_point = not torch.any(torch.gt(torch.abs(point_z_score), thresh))
-    test_keep_stable_rotation = not torch.any(torch.gt(torch.abs(rotation_z_score), thresh))
-    if not (test_keep_stable_point and test_keep_stable_rotation):
-        print(f"test points z {point_z_score}") 
-        print(f"test rotations z {rotation_z_score}") 
-    return (test_keep_stable_point and test_keep_stable_rotation), torch.max(torch.abs(point_z_score)), torch.max(torch.abs(rotation_z_score))
-
-def median_abs_deviation(data):
-    data_stack = torch.stack(data, dim=0)
-    data_mean = torch.mean(data_stack)
-    data_mean_repeated = data_mean.unsqueeze(0).repeat(data_stack.shape[0],1)
-    mad = torch.median(torch.abs(data_stack - data_mean_repeated))
-    return mad
-
-def mod_z_score(T, qua, thresh):
-    point_mean = torch.mean(torch.stack(point_samples), dim=0)
-    point_mad = median_abs_deviation(point_samples)
-    rotation_mean = torch.mean(torch.stack(rotation_samples), dim=0)
-    rotation_mad = median_abs_deviation(rotation_samples)
-
-    point_mod_z_score  = (0.6745*(T - point_mean)) / point_mad
-    rotation_mod_z_score  = (0.6745*(qua - rotation_mean)) / rotation_mad
-
-    test_keep_stable_point = not torch.any(torch.gt(torch.abs(point_mod_z_score), thresh))
-    test_keep_stable_rotation = not torch.any(torch.gt(torch.abs(rotation_mod_z_score), thresh))
-    if not (test_keep_stable_point and test_keep_stable_rotation):
-        print(f"test points z {point_mod_z_score}") 
-        print(f"test rotations z {rotation_mod_z_score}") 
-    return (test_keep_stable_point and test_keep_stable_rotation), torch.max(torch.abs(point_mod_z_score)), torch.max(torch.abs(rotation_mod_z_score))
-
-def update_publisher(cTr, img_msg, qua, T):
-    p = geometry_msgs.msg.PoseStamped()
-    p.header = img_msg.header
-    p.pose.position.x = T[0]
-    p.pose.position.y = T[1]
-    p.pose.position.z = T[2]
-    p.pose.orientation.x = qua[0]
-    p.pose.orientation.y = qua[1]
-    p.pose.orientation.z = qua[2]
-    p.pose.orientation.w = qua[3]
+def update_publisher(cTr, img_msg, quaternion=True):
+    # p = geometry_msgs.msg.PoseStamped()
+    # p.header = img_msg.header
+    # p.pose.position.x = T[0]
+    # p.pose.position.y = T[1]
+    # p.pose.position.z = T[2]
+    # p.pose.orientation.x = qua[0]
+    # p.pose.orientation.y = qua[1]
+    # p.pose.orientation.z = qua[2]
+    # p.pose.orientation.w = qua[3]
     #print(p)
-    pose_pub.publish(p)
-
-    # TODO: Not using the filtered output!
-    # Rotating to ROS format
+    # pose_pub.publish(p)
     cvTr= np.eye(4)
-    cvTr[:3, :3] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:, :3]).detach().cpu().numpy().squeeze()
-    cvTr[:3, 3] = np.array(cTr[:, 3:].detach().cpu())
+    if quaternion:
+        cvTr[:3, :3] = kornia.geometry.conversions.quaternion_to_rotation_matrix(cTr[:, :4]).detach().cpu().numpy().squeeze()
+        cvTr[:3, 3] = np.array(cTr[:, 4:].detach().cpu())
+    else:
+        cvTr[:3, :3] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:, :3]).detach().cpu().numpy().squeeze()
+        cvTr[:3, 3] = np.array(cTr[:, 3:].detach().cpu())
 
     # ROS camera to CV camera transform
     cTcv = np.array([[0, 0 , 1, 0], [-1, 0, 0 , 0], [0, -1, 0, 0], [0, 0, 0, 1]])
@@ -401,27 +213,172 @@ def update_publisher(cTr, img_msg, qua, T):
     t.transform.rotation.w = qua[0]
     br.sendTransform(t)
 
-rospy.init_node('panda_pose')
-# Define your image topic
-image_topic = "/rgb/image_raw"
-robot_joint_topic = "/joint_states"
-robot_pose_topic = "robot_pose"
-# Set up your subscriber and define its callback
-#rospy.Subscriber(image_topic, sensor_msgs.msg.Image, gotData)
+def _process_step(window_frames, is_first_step, grid_size, grid_query_frame):
+    video_chunk = (
+        torch.tensor(np.stack(window_frames[-model.step * 2 :]), device=device)
+        .float()
+        .permute(0, 3, 1, 2)[None]
+    )  # (1, T, 3, H, W)
+    return model(
+        video_chunk,
+        is_first_step=is_first_step,
+        grid_size=grid_size,
+        grid_query_frame=grid_query_frame,
+    )
 
-image_sub = Subscriber(image_topic, sensor_msgs.msg.Image)
-robot_j_sub = Subscriber(robot_joint_topic, sensor_msgs.msg.JointState)
-pose_pub = rospy.Publisher(robot_pose_topic, geometry_msgs.msg.PoseStamped, queue_size=1)
+def process_step_query(window_frames, is_first_step, query):
+    video_chunk = (
+        torch.tensor(np.stack(window_frames[-model.step * 2 :]), device=device)
+        .float()
+        .permute(0, 3, 1, 2)[None]
+    )  # (1, T, 3, H, W)
+    return model(
+        video_chunk,
+        is_first_step=is_first_step,
+        queries=query[None],
+    )
 
-ats = ApproximateTimeSynchronizer([image_sub, robot_j_sub], queue_size=10, slop=5)
-ats.registerCallback(gotData)
+if __name__ == "__main__":
+    warnings.filterwarnings("ignore", message="`XYZW` quaternion coefficient order is deprecated and will be removed after > 0.6. Please use `QuaternionCoeffOrder.WXYZ` instead.")
+    # CoTracker
+    if args.checkpoint is not None:
+        model = CoTrackerOnlinePredictor(checkpoint=args.checkpoint)
+    else:
+        model = torch.hub.load("facebookresearch/co-tracker", "cotracker2_online")
+    model = model.to(device)
+
+    # Particle filter
+    rospy.init_node('panda_pose')
+    # Define your image topic
+    image_topic = "/rgb/image_raw"
+    robot_joint_topic = "/joint_states"
+    robot_pose_topic = "robot_pose"
+    # Set up your subscriber and define its callback
+    #rospy.Subscriber(image_topic, sensor_msgs.msg.Image, gotData)
+
+    image_sub = Subscriber(image_topic, sensor_msgs.msg.Image)
+    robot_j_sub = Subscriber(robot_joint_topic, sensor_msgs.msg.JointState)
+    pose_pub = rospy.Publisher(robot_pose_topic, geometry_msgs.msg.PoseStamped, queue_size=1)
+
+    ats = ApproximateTimeSynchronizer([image_sub, robot_j_sub], queue_size=10, slop=5)
+    ats.registerCallback(gotData)
 
 
-# Main loop:
-rate = rospy.Rate(30) # 30hz
+    init_std = np.array([
+                1.0e-2, 1.0e-2, 1.0e-2, 1.0e-2, # ori
+                1.0e-3, 1.0e-3, 1.0e-3, # pos
+            ])
+    pf = ParticleFilter(num_states=7,
+                        init_distribution=sample_gaussian,
+                        motion_model=additive_gaussian,
+                        obs_model=point_feature_obs,
+                        num_particles=2500)
+    pf.init_filter(init_std)
+    rospy.loginfo("Initailized particle filter")
 
-while not rospy.is_shutdown():
-    try:
-        rate.sleep()
-    except rospy.exceptions.ROSTimeMovedBackwardsException as e:
-        continue
+    # Main loop:
+    rate = rospy.Rate(30) # 30hz
+    prev_cTr = None
+    use_particle_filter = True
+    cotracker_query = None
+    visualize_cotracker = False
+    while not rospy.is_shutdown():
+        try:
+            if new_data:
+                # print("here")
+                # Copy all new data gotData
+                # new_image = torch.copy(image)
+                # new_joint_angles = np.copy(joint_angles)
+                new_points_2d = torch.clone(points_2d)
+                new_cTr = torch.clone(cTr)
+                new_joint_confidence = torch.clone(joint_confidence)
+                new_image_msg = image_msg
+                new_image = image
+                new_data = False
+                # CoTracker ##################################################################################
+                if cotracker_query is None:
+                    cotracker_query = torch.cat((torch.zeros((7,1)).to(device), new_points_2d.squeeze()), 1)
+
+                if visual_idx % model.step == 0 and visual_idx != 0:
+                    pred_tracks, pred_visibility = process_step_query(
+                        window_frames,
+                        is_first_step,
+                        query=cotracker_query
+                    )
+                    is_first_step = False
+                frame = to_numpy_img(new_image)
+                window_frames.append(frame)
+                visual_idx += 1
+
+                # CoTracker ##################################################################################
+
+                if use_particle_filter == False:
+                    print("PARTICLE FILTER TURNED OFF")
+                    # pred_qua = kornia.geometry.conversions.angle_axis_to_quaternion(cTr[:,:3]).detach().cpu() # xyzw
+                    pred_T = cTr[:,3:].detach().cpu()
+                    update_publisher(new_cTr, new_image_msg, quaternion=False)
+                    # update_publisher(new_cTr, new_image_msg, pred_qua.cpu().detach().numpy().squeeze(), pred_T.cpu().detach().numpy().squeeze())
+                    continue
+
+                if prev_cTr is None:
+                    prev_cTr = new_cTr
+                    continue
+
+                # Skip if not CtRNet not confident in joints
+                # joint_confident_thresh = 0
+                # num_joint_confident = torch.sum(torch.gt(joint_confidence, 0.95))
+                # if num_joint_confident < joint_confident_thresh:
+                #     print(f"Only confident with {num_joint_confident} joints, skipping...")
+                #     continue
+                
+                # Predict Particle filter
+                pred_std = np.array([1.0e-4, 1.0e-4, 1.0e-4, 1.0e-4,
+                                    2.5e-5, 2.5e-5, 2.5e-5])
+
+                pf.predict(pred_std)
+
+                # Update Particle filter
+                cam = None
+                gamma = 0.15
+                pf.update(new_points_2d, CtRNet, joint_angles, cam, prev_cTr, gamma)
+
+                mean_particle = pf.get_mean_particle()
+                mean_particle_r = torch.from_numpy(mean_particle[:4])
+                mean_particle_t = torch.from_numpy(mean_particle[4:])
+
+                prev_cTr_r = kornia.geometry.conversions.angle_axis_to_quaternion(prev_cTr[:, :3])
+                prev_cTr_t = prev_cTr[:, 3:]
+
+                pred_cTr = torch.zeros((1, 7))
+                pred_cTr[0, :4] = prev_cTr_r.cpu() + mean_particle_r
+                pred_cTr[0, 4:] = prev_cTr_t.cpu() + mean_particle_t
+                # good ctr: tensor([[ 0.3882,  0.7024, -0.5301,  0.2847,  0.1452,  0.3092,  1.0225]]
+                # print(pred_cTr)
+                # pred_qua = kornia.geometry.conversions.angle_axis_to_quaternion(pred_cTr[:,:3]).detach().cpu() # xyzw
+                # pred_T = pred_cTr[:,3:].detach().cpu()
+                # update_publisher(pred_cTr, new_image_msg, pred_qua.cpu().detach().numpy().squeeze(), pred_T.cpu().detach().numpy().squeeze())
+                update_publisher(pred_cTr, new_image_msg)
+            rate.sleep()
+        except KeyboardInterrupt:
+            # Processing the final video frames in case video length is not a multiple of model.step
+            rospy.signal_shutdown("Done.")
+    if visualize_cotracker:
+        # pred_tracks, pred_visibility = _process_step(
+        #     window_frames[-(visual_idx % model.step) - model.step - 1 :],
+        #     is_first_step,
+        #     grid_size=args.grid_size,
+        #     grid_query_frame=args.grid_query_frame,
+        # )
+        pred_tracks, pred_visibility = process_step_query(
+            window_frames[-(visual_idx % model.step) - model.step - 1 :],
+            is_first_step,
+            query=cotracker_query
+        )
+        print("Tracks are computed")
+        # save a video with predicted tracks
+        seq_name = "panda"
+        video = torch.tensor(np.stack(window_frames), device=device).permute(0, 3, 1, 2)
+        video = (video*255)[None]
+        vis = Visualizer(save_dir="/home/workspace/src/ctrnet-robot-pose-estimation-ros/ros_nodes/visuals", tracks_leave_trace=-1)
+        vis.visualize(video=video, tracks=pred_tracks, visibility=pred_visibility, filename=seq_name)
+        # vis.visualize(video, pred_tracks, pred_visibility, query_frame=args.grid_query_frame, filename=seq_name)
