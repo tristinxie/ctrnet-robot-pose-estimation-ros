@@ -46,7 +46,7 @@ args.keypoint_seg_model_path = os.path.join(args.base_dir,"weights/panda/panda-3
 args.urdf_file = os.path.join(args.base_dir,"urdfs/Panda/panda.urdf")
 args.robot_name = 'Panda' # "Panda" or "Baxter_left_arm"
 args.n_kp = 7
-args.scale = 0.15625
+args.scale = 0.3125
 args.height = 1536
 args.width = 2048
 args.fx, args.fy, args.px, args.py = 967.2597045898438, 967.2623291015625, 1024.62451171875, 772.18994140625
@@ -153,7 +153,7 @@ if __name__ == "__main__":
     ats.registerCallback(gotData)
     dataset_dir = os.path.join(args.base_dir, "panda_dataset")
     # Create episode folder
-    ep_num = len(os.listdir(dataset_dir))+1
+    ep_num = str(len(os.listdir(dataset_dir))+1).zfill(4)
     ep_name = f"panda_{ep_num}"
     ep_path = os.path.join(dataset_dir, ep_name)
     os.mkdir(ep_path)
@@ -169,7 +169,7 @@ if __name__ == "__main__":
         elif recalib == "n":
             ref_ep = input("Enter name of another episode with the same calibration file (Enter for previous episode): ")
             if ref_ep == "":
-                prev_ep = ep_num - 1
+                prev_ep = str(ep_num - 1).zfill(4)
                 ref_ep = f"panda_c_{prev_ep}"
             break
         else:

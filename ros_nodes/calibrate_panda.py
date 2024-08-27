@@ -119,7 +119,7 @@ def gotData(img_msg, joint_msg):
         bTe[:-1, :-1] = r_list[8]
         bTe[:-1, -1] = t_list[8]
         img_np = to_numpy_img(image)
-        # input(f"Enter to capture another image, {image_idx} so far. Any key to quit.") 
+        print(f"Capturing {image_idx}/{num_poses}...")
         capture_data(img_np, bTe, joint_angles, cTr, points_2d, segmentation, joint_confidence)
         move_panda(client, joint_angles)
         rospy.sleep(7)
@@ -286,7 +286,7 @@ def create_data_dir(data_dir_name):
 
 def main():
     global client
-    # rospy.init_node('calibrate_panda')
+    rospy.init_node('calibrate_panda')
     # Move panda client
     print("Move panda to the center of the camera frame in a neutral position before starting!")
     action = '/effort_joint_trajectory_controller/follow_joint_trajectory'
